@@ -72,6 +72,11 @@ export type PizzaMoney = {
 };
 
 /** Interest earned = aUSDC balance minus principal. Prefers Aave's lifetime history; falls back to on-chain. */
+// Unix seconds just before the user's latest in-app transaction. Aave's history API lags the
+// chain, so until it shows an event at or after this time, a fresh supply would read as interest.
+let lastTxAt = 0;
+const HISTORY_LAG_WINDOW = 600;
+
 export function usePizzaMoney(): PizzaMoney {
   const { chainId, cfg } = useAaveChain();
   const { address } = useAccount();
@@ -87,7 +92,9 @@ export function usePizzaMoney(): PizzaMoney {
   });
 
   const balance = d.aUsdcBalance;
-  if (balance !== undefined && history.data) {
+  const newest = history.data?.reduce((m, e) => Math.max(m, e.timestamp), 0) ?? 0;
+  const historyStale = lastTxAt > 0 && newest < lastTxAt;
+  if (balance !== undefined && history.data && !historyStale) {
     const h = interestFromHistory(balance, history.data);
     return { isLoading: false, balance, interest: h.interest, basis: "allTime", lifetimeEarned: h.lifetimeEarned };
   }
@@ -95,7 +102,7 @@ export function usePizzaMoney(): PizzaMoney {
     balance !== undefined && d.scaledBalance !== undefined && d.previousIndex !== undefined
       ? interestSinceLastAction(balance, d.scaledBalance, d.previousIndex)
       : undefined;
-  const waitingForHistory = !!address && cfg.aaveApi && history.isLoading;
+  const waitingForHistory = !!address && cfg.aaveApi && history.isLoading && !historyStale;
   return {
     isLoading: d.isLoading || waitingForHistory,
     balance,
@@ -168,6 +175,11 @@ export function useTx() {
       setError(undefined);
       setHash(undefined);
       setSigning(true);
+      const markedAt = Math.floor(Date.now() / 1000) - 60; // allow for clock skew vs block time
+      lastTxAt = markedAt;
+      setTimeout(() => {
+        if (lastTxAt === markedAt) lastTxAt = 0;
+      }, HISTORY_LAG_WINDOW * 1000);
       try {
         setHash(await send(writeContractAsync));
       } catch (e) {
