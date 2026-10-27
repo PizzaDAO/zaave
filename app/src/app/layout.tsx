@@ -8,8 +8,8 @@ const geistSans = Geist({ variable: "--font-geist-sans", subsets: ["latin"] });
 const geistMono = Geist_Mono({ variable: "--font-geist-mono", subsets: ["latin"] });
 
 export const metadata: Metadata = {
-  title: "Zaave: stake USDC, get pizza",
-  description: "Aave, but the yield is pizza. Stake USDC, keep your principal, get pies every month.",
+  title: "Zaave: supply crypto, get pizza",
+  description: "Aave, but the yield is pizza. Supply crypto to Aave, keep your principal, get pies every month.",
 };
 
 export const viewport: Viewport = { width: "device-width", initialScale: 1 };

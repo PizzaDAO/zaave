@@ -3,51 +3,87 @@
 import { useQueries, useQueryClient } from "@tanstack/react-query";
 import { useCallback, useEffect, useMemo, useState, useSyncExternalStore } from "react";
 import { erc20Abi, type Hash } from "viem";
-import { useAccount, useReadContracts, useSwitchChain, useWaitForTransactionReceipt, useWriteContract } from "wagmi";
+import {
+  useAccount,
+  useBalance,
+  useConfig,
+  useGasPrice,
+  useReadContracts,
+  useSwitchChain,
+  useWaitForTransactionReceipt,
+  useWriteContract,
+} from "wagmi";
+import { getPublicClient } from "wagmi/actions";
 import { fetchMarketHistory, interestFromHistory, interestSinceLastAction, type InterestBasis } from "./interest";
-import { buildMarketContracts, parseMarketRows, unreachableChains, type ReserveState } from "./market-reads";
-import { chainName, RESERVES, type Reserve } from "./markets";
-import { DEFAULT_PIE_PRICE, MAX_PIE_PRICE, MIN_PIE_PRICE, toUsdc6, USDC_UNIT } from "./pizza";
+import { readMarket, type MarketState, type ReserveState } from "./market-reads";
+import { chainName, isStable, MARKETS, networkLabel, type Choice, type Reserve } from "./markets";
+import { DEFAULT_PIE_PRICE, MAX_PIE_PRICE, MIN_PIE_PRICE, toUsd6, USDC_UNIT } from "./pizza";
 
 /** One refresh cadence for all on-chain reads, across every chain. */
 const POLL_MS = 30_000;
 
-/**
- * Every USDC reserve on every chain, in one useReadContracts call: wagmi groups the calls by
- * chainId into one multicall per chain, and allowFailure lets a dead RPC fail only its own rows.
- * Rates need no wallet; the user's aToken position is added when connected.
- */
-/** "Best" needs at least this much withdrawable USDC in the pool (6 decimals). */
-const MIN_BEST_AVAILABLE = 1_000_000n * 10n ** 6n;
+/** "Best" needs at least $1M withdrawable in the pool (USD, 6 decimals). */
+export const MIN_BEST_AVAILABLE_USD6 = 1_000_000n * USDC_UNIT;
 
+/** USD value (6 decimals) of the liquidity currently withdrawable from a reserve. */
+export const availableUsd6 = (s: ReserveState) => toUsd6(s.available, s.reserve.decimals, s.priceE8);
+
+/** Best-APY first among reserves that accept deposits. */
+export function rankBySupplyApy(states: readonly ReserveState[]): ReserveState[] {
+  return states.filter((s) => s.canSupply).sort((a, b) => b.apy - a.apy);
+}
+
+/** The best-APY reserve with enough liquidity that a large withdrawal won't revert; else simply the best. */
+export function pickBest(ranked: readonly ReserveState[]): ReserveState | undefined {
+  return ranked.find((s) => availableUsd6(s) >= MIN_BEST_AVAILABLE_USD6) ?? ranked[0];
+}
+
+type Combined = { markets: MarketState[]; loading: boolean };
+const combineMarkets = (results: { data?: MarketState; isLoading: boolean }[]): Combined => ({
+  markets: results.flatMap((r) => (r.data ? [r.data] : [])),
+  loading: results.some((r) => r.isLoading),
+});
+
+/**
+ * Every market on every chain: one query per market (1-2 provider calls plus a balance round for
+ * reserves the wallet holds, see market-reads.ts). A market whose RPC fails only fails its own
+ * query. Rates need no wallet; positions are added when connected. Polls every 30 s.
+ */
 export function useMarketData() {
   const { address } = useAccount();
-  const contracts = useMemo(() => buildMarketContracts(address), [address]);
+  const config = useConfig();
 
-  const result = useReadContracts({
-    contracts: contracts as never,
-    query: { refetchInterval: POLL_MS, staleTime: POLL_MS / 2 },
+  const combined = useQueries({
+    queries: MARKETS.map((m) => ({
+      queryKey: ["market", m.id, address ?? null],
+      queryFn: () => {
+        const client = getPublicClient(config, { chainId: m.chainId as never });
+        return readMarket((args) => client!.readContract(args as never), m, address);
+      },
+      refetchInterval: POLL_MS,
+      staleTime: POLL_MS / 2,
+      retry: 1,
+    })),
+    combine: combineMarkets,
   });
 
-  const reserves = useMemo(() => parseMarketRows(result.data as never, address), [result.data, address]);
+  const { markets, loading } = combined;
+  const reserves = useMemo(() => markets.flatMap((m) => m.reserves), [markets]);
 
-  // A chain is "unreachable" when none of its reserves answered (only meaningful once loaded).
+  // Networks whose provider call failed (only meaningful once loaded). A chain with several
+  // markets is listed when any of them failed.
   const unreachable = useMemo(
-    () => (result.isLoading || !result.data ? [] : unreachableChains(reserves, chainName)),
-    [reserves, result.isLoading, result.data],
+    () => [...new Set(markets.filter((m) => !m.reachable).map((m) => networkLabel({ chainId: m.market.chainId, chainName: m.market.chainName, marketName: m.market.marketName })))],
+    [markets],
   );
+  const userFailed = useMemo(() => markets.filter((m) => m.reachable && !m.userOk).map((m) => chainName(m.market.chainId)), [markets]);
 
   /** Reserves currently accepting deposits, best APY first. */
-  const ranked = useMemo(
-    () => reserves.filter((s) => s.canSupply && s.apy !== undefined).sort((a, b) => b.apy! - a.apy!),
-    [reserves],
-  );
+  const ranked = useMemo(() => rankBySupplyApy(reserves), [reserves]);
+  /** Best stablecoin reserve (the calculator's default). */
+  const best = useMemo(() => pickBest(ranked.filter((s) => isStable(s.reserve))), [ranked]);
 
-  // "Best" skips thin pools, where a large withdrawal could revert until borrowers repay.
-  const best =
-    ranked.find((s) => s.available !== undefined && toUsdc6(s.available, s.reserve.decimals) >= MIN_BEST_AVAILABLE) ?? ranked[0];
-
-  return { reserves, ranked, best, unreachable, isLoading: result.isLoading };
+  return { markets, reserves, ranked, best, unreachable, userFailed, isLoading: loading };
 }
 
 export type Position = {
@@ -56,10 +92,10 @@ export type Position = {
   /** aToken balance and interest in the reserve's own decimals (exact, for transactions). */
   balance: bigint;
   interest: bigint | undefined;
-  /** Same two figures normalized to 6-decimal USDC, for totals and pizza math. */
-  balance6: bigint;
-  interest6: bigint | undefined;
-  apy: number | undefined;
+  /** The same two figures in USD (6 decimals) at the oracle price, for totals and pizza math. */
+  balanceUsd: bigint;
+  interestUsd: bigint | undefined;
+  apy: number;
   /** "allTime" when Aave's history API answered for this reserve, else "sinceLastAction". */
   basis: InterestBasis;
   /** All-time interest including anything already cashed out (all-time basis only). */
@@ -74,14 +110,14 @@ const HISTORY_LAG_WINDOW = 600;
 
 /**
  * The user's positions across all chains, with interest per reserve. Prefers Aave's lifetime
- * history (one API request per market, only for markets where the user holds a balance) and falls
- * back to the exact on-chain since-last-action figure.
+ * history (one API request per market, only for markets where the user holds a balance, split by
+ * each reserve's underlying) and falls back to the exact on-chain since-last-action figure.
  */
 export function usePortfolio() {
   const { address } = useAccount();
   const market = useMarketData();
 
-  const held = market.reserves.filter((s) => (s.balance ?? 0n) > 0n);
+  const held = useMemo(() => market.reserves.filter((s) => (s.balance ?? 0n) > 0n), [market.reserves]);
   const historyMarkets = [...new Map(held.filter((s) => s.reserve.aaveApi).map((s) => [s.reserve.marketId, s.reserve])).values()];
   const histories = useQueries({
     queries: historyMarkets.map((r) => ({
@@ -92,8 +128,9 @@ export function usePortfolio() {
           market: r.pool,
           user: address!,
           chainId: r.chainId,
+          // every reserve of the market, by its own underlying and decimals (never normalized)
           decimals: Object.fromEntries(
-            RESERVES.filter((x) => x.marketId === r.marketId).map((x) => [x.underlying.toLowerCase(), x.decimals]),
+            market.reserves.filter((x) => x.reserve.marketId === r.marketId).map((x) => [x.reserve.underlying.toLowerCase(), x.reserve.decimals]),
           ),
         }),
       staleTime: 20_000,
@@ -131,56 +168,73 @@ export function usePortfolio() {
       reserve,
       balance,
       interest,
-      balance6: toUsdc6(balance, reserve.decimals),
-      interest6: interest === undefined ? undefined : toUsdc6(interest, reserve.decimals),
+      balanceUsd: toUsd6(balance, reserve.decimals, state.priceE8),
+      interestUsd: interest === undefined ? undefined : toUsd6(interest, reserve.decimals, state.priceE8),
       apy: state.apy,
       basis,
       lifetimeEarned,
     };
   });
-  positions.sort((a, b) => (a.balance6 < b.balance6 ? 1 : a.balance6 > b.balance6 ? -1 : 0));
+  positions.sort((a, b) => (a.balanceUsd < b.balanceUsd ? 1 : a.balanceUsd > b.balanceUsd ? -1 : 0));
 
-  const balance6 = positions.reduce((n, p) => n + p.balance6, 0n);
-  const interest6 = positions.reduce((n, p) => n + (p.interest6 ?? 0n), 0n);
-  const lifetime6 = positions.reduce(
-    (n, p) => n + (p.lifetimeEarned === undefined ? 0n : toUsdc6(p.lifetimeEarned, p.reserve.decimals)),
+  const balanceUsd = positions.reduce((n, p) => n + p.balanceUsd, 0n);
+  const interestUsd = positions.reduce((n, p) => n + (p.interestUsd ?? 0n), 0n);
+  const lifetimeUsd = positions.reduce(
+    (n, p) => n + (p.lifetimeEarned === undefined ? 0n : toUsd6(p.lifetimeEarned, p.reserve.decimals, p.state.priceE8)),
     0n,
   );
   const interestPending = positions.some((p) => p.interest === undefined);
 
   return {
     positions,
-    totals: { balance6, interest6, lifetime6, interestPending },
+    totals: { balanceUsd, interestUsd, lifetimeUsd, interestPending },
     unreachable: market.unreachable,
+    userFailed: market.userFailed,
     isLoading: market.isLoading || interestPending,
     market,
   };
 }
 
-/** The wallet's USDC balance and allowance to the Aave Pool for one reserve (on that reserve's chain). */
-export function useWalletReserve(reserve: Reserve | undefined) {
+/**
+ * The wallet's balance of what a choice spends (the ERC20, or the native gas token), the
+ * allowance the supply path needs (underlying to the Pool; none for native), and, for native,
+ * the allowance of the aToken to the gateway that withdrawETH needs. All on that reserve's chain.
+ */
+export function useWalletReserve(choice: Choice | undefined) {
   const { address } = useAccount();
-  const result = useReadContracts({
-    contracts:
+  const reserve = choice?.reserve;
+  const native = !!choice?.native;
+  const enabled = !!reserve && !!address;
+
+  const erc20 = useReadContracts({
+    contracts: (
       reserve && address
         ? [
             { address: reserve.underlying, abi: erc20Abi, functionName: "balanceOf", args: [address], chainId: reserve.chainId },
-            {
-              address: reserve.underlying,
-              abi: erc20Abi,
-              functionName: "allowance",
-              args: [address, reserve.pool],
-              chainId: reserve.chainId,
-            },
+            { address: reserve.underlying, abi: erc20Abi, functionName: "allowance", args: [address, reserve.pool], chainId: reserve.chainId },
+            ...(reserve.gateway
+              ? [{ address: reserve.aToken, abi: erc20Abi, functionName: "allowance", args: [address, reserve.gateway], chainId: reserve.chainId } as const]
+              : []),
           ]
-        : [],
-    query: { enabled: !!reserve && !!address, refetchInterval: POLL_MS },
+        : []) as never,
+    query: { enabled, refetchInterval: POLL_MS },
   });
-  const d = result.data;
+  const nativeBal = useBalance({ address, chainId: reserve?.chainId, query: { enabled: enabled && native, refetchInterval: POLL_MS } });
+  const gas = useGasPrice({ chainId: reserve?.chainId, query: { enabled: enabled && native } });
+
+  const d = erc20.data as { result?: unknown }[] | undefined;
+  const tokenBalance = d?.[0]?.result as bigint | undefined;
+  const balance = native ? nativeBal.data?.value : tokenBalance;
+  // Leave room for gas when sending the whole native balance: 2x a 300k-gas transaction at the current price.
+  const gasReserve = native ? (gas.data ? gas.data * 300_000n * 2n : (balance ?? 0n) / 100n) : 0n;
   return {
-    isLoading: result.isLoading,
-    usdcBalance: d?.[0]?.result as bigint | undefined,
+    isLoading: erc20.isLoading || (native && nativeBal.isLoading),
+    balance,
+    /** The most to send in one go (native: balance minus a gas reserve). */
+    maxSpend: balance === undefined ? undefined : balance > gasReserve ? balance - gasReserve : 0n,
     allowance: d?.[1]?.result as bigint | undefined,
+    /** Allowance of the aToken to the WrappedTokenGateway (for native withdrawals). */
+    gatewayAllowance: d?.[2]?.result as bigint | undefined,
   };
 }
 

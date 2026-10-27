@@ -1,7 +1,7 @@
 # Zaave handoff (2026-10-27)
 
 ## What it is
-A pizza-themed front end for **Aave v3's USDC markets on every EVM network that has one** (17 chains, 20 markets, 25 USDC-family reserves). Users supply USDC from their own wallet, hold aUSDC, and the app shows their interest as pizza (pies and slices at a pie price each user sets). There's no Zaave smart contract, no fee and no token.
+A pizza-themed front end for **every asset you can supply on Aave v3, on every EVM network in the address book** (19 chains, 22 markets, 255 reserves). Users supply from their own wallet, hold the aToken, and the app shows their interest as pizza (pies and slices at a pie price each user sets, in USD). There's no Zaave smart contract, no fee and no token.
 
 - **Live:** https://zaave.vercel.app (Vercel project `pizza-dao/zaave`, PizzaDAO team)
 - **Repo:** https://github.com/PizzaDAO/zaave (public). The app is in `app/`, and plans are in `plans/`.
@@ -10,33 +10,36 @@ A pizza-themed front end for **Aave v3's USDC markets on every EVM network that 
 ## Status
 | Area | State |
 |---|---|
-| Calculator (`/`) | Best live USDC APY across all chains by default, "Rates by network" list to pick one. Pies ↔ USDC mode toggle. |
-| Stake (`/stake`) | Network + reserve picker (default: largest position, else best APY). Switches the wallet chain, then approve / `supply` / `withdraw` / withdraw all. **Not tested with a real wallet.** |
-| Dashboard (`/dashboard`) | Totals across all chains (balance, pizza money, projected pies/month, meter) plus a per-network breakdown. Untested with a wallet (read path tested in node, see below). |
-| Redeem (`/redeem`) | One "Cash out" per reserve with interest > 0 (switches chain, withdraws exactly that interest). Untested with a wallet. |
-| About (`/about`) | Updated for multi-network |
-| Mobile (375px) | Not checked. Run `/mobile-check`. |
+| Calculator (`/`) | Asset selector next to the amount field (default "Best stable" = best-APY stablecoin with >= $1M liquidity). Pies <-> USD toggle. "Rates by network" is per selected asset. Non-stable note under the result. |
+| Stake (`/stake`) | Searchable asset picker (holdings first, then popular, then A-Z), then a network picker for that asset. Switch chain, approve, `supply`, withdraw / withdraw all. Native gas tokens via the WrappedTokenGateway. **Not tested with a real wallet (no writes were sent).** |
+| Dashboard (`/dashboard`) | USD totals over every reserve and chain, per-position rows (token + USD balance and interest, APY, basis). Read path tested in node with real wallets. |
+| Redeem (`/redeem`) | Per-position cash out of interest in that token; native via `withdrawETH` (aToken approval first). Untested with a wallet. |
+| About (`/about`) | Lists every network's assets. |
+| Mobile (375px) | Layout built mobile-first; not checked on a real 375px viewport. Run `/mobile-check`. |
 
 ## How it works (code map)
-- `app/scripts/gen-markets.mjs` generates `app/src/lib/markets.generated.ts` (committed) from the pinned devDependency `@bgd-labs/aave-address-book@4.44.22`. **This is the only source of transaction-target addresses**; nothing is fetched at runtime. Re-run `node scripts/gen-markets.mjs` after bumping the package. It also holds the bridged-USDC list and market names, and emits the static `NEXT_PUBLIC_RPC_<chainId>` map.
-- `app/scripts/verify-markets.mjs` re-checks every reserve on-chain (aToken `UNDERLYING_ASSET_ADDRESS()`/`POOL()`, decimals, frozen/paused flags). `app/scripts/check-reads.mts` (`pnpm dlx tsx scripts/check-reads.mts 0xUser`) runs the cross-chain read path in node. `app/scripts/bundle-size.mjs` prints first-load JS after a build.
-- `app/src/lib/markets.ts`: flattens markets into `RESERVES` (key `<chainId>-<market>-<symbol>`), the wagmi `CHAINS`, labels, explorer URLs, and which markets use Aave's history API. `NEXT_PUBLIC_ENABLE_TESTNETS=1` adds Base Sepolia.
-- `app/src/lib/rpc-defaults.ts`: default public RPC per chain. Override with `NEXT_PUBLIC_RPC_<chainId>`.
-- `app/src/lib/market-reads.ts`: pure call-list builder and parser (shared by hooks and the node script). Per reserve: pool `getReserveData` (APY, active/frozen/paused bits), and with a wallet the aToken `balanceOf` / `scaledBalanceOf` / `getPreviousIndex`.
-- `app/src/lib/hooks.ts`: `useMarketData` (one `useReadContracts`, wagmi makes one multicall per chain, `allowFailure`, 30 s poll, a chain whose reserves all fail is listed as unreachable), `usePortfolio` (positions + interest per reserve), `useWalletReserve`, `usePiePrice`, `useTx` (switches chain before writing).
-- `app/src/lib/interest.ts`: interest = aToken balance minus supplies since the user last fully exited, from Aave's GraphQL `userTransactionHistory` (one request per market where the user holds a balance, split by reserve underlying), else the on-chain since-last-action figure. The UI labels the basis per reserve.
-  - History API works for 16 of the 20 markets. **Metis, Mantle, Celo and Ink are not served** (`NO_HISTORY_CHAINS` in `markets.ts`), so they always use the since-last-action basis.
-  - After an in-app tx, history for that reserve is ignored until the API shows an event at or after that time (10 minutes at most), tracked per reserve.
-- `app/src/lib/pizza.ts`: slice/pie math in bigint; `toUsdc6` normalizes any reserve's decimals to 6 for totals. Per-reserve amounts and all transactions stay in the reserve's own decimals (BNB Chain's USDC is 18).
-- Frozen reserves (Aave closed them to deposits: 10 legacy/bridged ones) are hidden from rates and the stake picker unless the user holds a balance there, and are withdraw-only.
+- `app/scripts/gen-markets.mjs` generates `app/src/lib/markets.generated.ts` (committed) from the pinned devDependency `@bgd-labs/aave-address-book@4.44.22`. **This is the only source of transaction-target addresses**; nothing is fetched at runtime. Per market: POOL, ORACLE, UI_POOL_DATA_PROVIDER, POOL_ADDRESSES_PROVIDER, WALLET_BALANCE_PROVIDER, WETH_GATEWAY (+ wrapped-native underlying and native symbol) and one compact tuple per reserve `[symbol, underlying, aToken, decimals, bridged]`. Re-run `node scripts/gen-markets.mjs` after bumping the package. It also holds symbol renames, the bridged-USDC list, per-chain native/wrapped-native keys, `NEVER_SUPPLY` (GHO) and `ONLY_KEYS` (Horizon offers only USDC and RLUSD; its RWA reserves are permissioned).
+- `app/src/lib/markets.ts`: flattens markets into `RESERVES` (key `<chainId>-<market>-<symbol>`), `ASSETS` (reserves grouped across chains by display label, plus `native:<SYM>` assets for gas tokens), `Choice` (reserve + native flag), the stablecoin list (`isStable`), `POPULAR_ASSETS`, wagmi `CHAINS`, labels.
+- `app/src/lib/market-reads.ts`: `readMarket(read, market, user)`, shared by hooks and node scripts. Per market: `UiPoolDataProvider.getReservesData(provider)` (rate, status, liquidity, supply cap, oracle price, base currency); with a wallet also `getUserReservesData` and `WalletBalanceProvider.getUserWalletBalances`; then aToken `balanceOf/scaledBalanceOf/getPreviousIndex` only for reserves where the scaled balance > 0. Every provider reserve is cross-checked against the static config (underlying, aToken, decimals); others are ignored. USD price = `priceInMarketReferenceCurrency * marketReferenceCurrencyPriceInUsd / marketReferenceCurrencyUnit` (8 decimals, `priceE8`). Supply cap headroom ~ `supplyCap*10^dec - (availableLiquidity + rayMul(totalScaledVariableDebt, variableBorrowIndex))`; "cap reached" when under 0.01% is left.
+- UiPoolDataProvider ABI (`abis.ts`): all 22 markets return the **same v3.3+ layout** (no stable-debt fields, `virtualUnderlyingBalance`/`deficit` at the end). The address book's older v3.0 ABI fails to decode on every one. `scripts/verify-markets.mjs` re-checks this (decode, rate and status vs the pool, token/pool/decimals, gateway `WETH()`/`POOL()`; `RPC_<chainId>=url` overrides a flaky RPC, Mantle's default rate-limits).
+- `app/src/lib/hooks.ts`: `useMarketData` (one react-query per market, 30 s poll, a failed market is listed as unreachable), `usePortfolio` (positions + interest per reserve, USD), `useWalletReserve` (wallet balance/allowance, native balance, aToken->gateway allowance), `usePiePrice`, `useTx` (switches chain before writing).
+- `app/src/lib/interest.ts`: same logic as before. History is requested once per market and split by each reserve's underlying and decimals (up to 3,000 events). Gateway **supplies** show up in Aave's history under the wrapped token with the right amount (checked on Base: 6 of 6). Gateway **withdrawals** emit the pool `Withdraw` event with user = to = the gateway, so they most likely do not appear in the user's history. Effect: interest is understated (never overstated) after a native full exit followed by a new supply. Not verified with a real wallet.
+- `app/src/lib/pizza.ts`: all pizza math on USD6 bigint (`toUsd6(amount, decimals, priceE8)`, `fromUsd6`). Transactions always use the reserve's own token units.
+- `app/src/lib/assets.ts`: per-asset roll-ups (best APY, supplied USD, wallet USD) for the picker and calculator.
+- Native: `depositETH(pool, user, 0)` with `value`; `withdrawETH(pool, amount, user)` after approving the aToken to the gateway (approve exact amount; for "all", balance + 0.1%; max uint withdraws everything). Markets without a gateway (EtherFi, Horizon, Metis, Celo) show only the wrapped token. Native "Max" keeps a gas reserve (2 x 300k gas at the current price).
+- `app/scripts/check-reads.mts` (`pnpm dlx tsx scripts/check-reads.mts 0xUser ...`) runs the read path for all markets in node. `app/scripts/bundle-size.mjs` prints first-load JS after a build.
+- History API works for 16 of the original 20 markets. **Metis, Mantle, Celo and Ink are not served**; Plasma and MegaETH were not probed and are treated as unsupported (`NO_HISTORY_CHAINS` in `markets.ts`).
+- Frozen/paused/inactive/capped reserves are hidden from supply (shown as withdraw-only / "supply cap reached" in the network picker, selectable only if the user holds a balance). Many sunset markets (Sonic, zkSync, Metis, Soneium, Scroll) currently have every reserve frozen.
 
 ## Known limitations
 - A partial withdrawal of principal looks the same as cashing out interest, so pizza money reads 0 until the balance grows back above what was supplied.
-- aUSDC transferred in from another wallet counts as interest. Aave's API has no transfer history.
-- Public RPCs are rate limited and some are flaky. Set `NEXT_PUBLIC_RPC_<chainId>` for any chain that misbehaves (especially 1, 8453, 42161).
+- aTokens transferred in from another wallet count as interest. Aave's API has no transfer history.
+- Public RPCs are rate limited and some are flaky (Mantle, Base, Scroll defaults in particular). Set `NEXT_PUBLIC_RPC_<chainId>` for any chain that misbehaves (especially 1, 8453, 42161).
 - Bridged labels (`bridged: true`) are a hand-kept list in `gen-markets.mjs`, checked against on-chain names. Ink's USDC is treated as native (unconfirmed).
-- Aave X Layer and Monad markets exist in Aave's API but not in address-book 4.44.22, so they're not supported yet. Plasma and MegaETH are in the book with no USDC reserve.
-- Supply caps are not checked before a deposit; Aave will revert if a cap is hit.
+- Aave X Layer and Monad markets exist in Aave's API but not in address-book 4.44.22, so they're not supported yet.
+- The supply cap headroom is an estimate from provider data (a few seconds stale); Aave is the final check.
+- The address book lags the chain: Ethereum Core (+5), Ink (+6), Plasma (+4), MegaETH (+2) list reserves the book does not have, and the app ignores them until the book is bumped.
+- Stablecoin detection is a hand-kept symbol list (`STABLE_SYMBOLS` in `markets.ts`), not price based.
 - Without `NEXT_PUBLIC_WC_PROJECT_ID`, only browser-extension (injected) wallets connect, with no WalletConnect QR.
 
 ## Run / deploy
@@ -54,7 +57,7 @@ vercel-deploy --prod                   # from app/ (linked to pizza-dao/zaave)
 - Leftover agent worktrees under `.claude/worktrees/` (gitignored) can be removed with `git worktree remove`.
 
 ## Next steps
-1. **Smoke-test with a real wallet on Base**, with a few dollars: supply → dashboard → cash out → withdraw all.
+1. **Smoke-test with a real wallet on Base**, with a few dollars: supply USDC, supply ETH (gateway), dashboard, cash out, withdraw all (both paths).
 2. **Gift cards via Bitrefill.** Their US catalog appears to include Domino's, Pizza Hut and Papa John's, plus DoorDash, Uber Eats and Grubhub (from search results; not checked against live listings).
    - Email bd@bitrefill.com for Business API access. The questions to ask are in `plans/research-giftcards.md`.
    - Offering a pizza chain directly is more on-theme than DoorDash.

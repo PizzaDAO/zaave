@@ -1,4 +1,5 @@
-// Pizza math. On-chain USDC amounts are bigint (6 decimals); calculator estimates use numbers.
+// Pizza math. All of it runs on USD values as bigint with 6 decimals ("usd6"): a token amount is
+// converted with its oracle price (toUsd6) first. Calculator estimates use plain numbers.
 
 export const USDC_DECIMALS = 6;
 export const USDC_UNIT = 1_000_000n;
@@ -8,9 +9,17 @@ export const MIN_PIE_PRICE = 1n * USDC_UNIT;
 export const MAX_PIE_PRICE = 1000n * USDC_UNIT;
 const SECONDS_PER_YEAR = 31_536_000;
 
-/** Re-express a token amount in 6-decimal USDC units, so reserves with other decimals (BNB's 18) sum and display alike. */
-export function toUsdc6(amount: bigint, decimals: number): bigint {
-  return decimals >= USDC_DECIMALS ? amount / 10n ** BigInt(decimals - USDC_DECIMALS) : amount * 10n ** BigInt(USDC_DECIMALS - decimals);
+/** Oracle prices are kept as USD with 8 decimals ($1 = 100_000_000n), like Aave's own oracle. */
+export const PRICE_DECIMALS = 8;
+
+/** USD value (6 decimals) of a token amount: amount in the token's own decimals x USD price (8 decimals). */
+export function toUsd6(amount: bigint, decimals: number, priceE8: bigint): bigint {
+  return (amount * priceE8) / 10n ** BigInt(decimals + PRICE_DECIMALS - USDC_DECIMALS);
+}
+
+/** Inverse of toUsd6: the token amount (own decimals) worth a USD6 value. Zero when the price is unknown. */
+export function fromUsd6(usd6: bigint, decimals: number, priceE8: bigint): bigint {
+  return priceE8 > 0n ? (usd6 * 10n ** BigInt(decimals + PRICE_DECIMALS - USDC_DECIMALS)) / priceE8 : 0n;
 }
 
 /** Aave ray APR (1e27) to APY, compounded per second like Aave's own UI. */

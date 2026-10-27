@@ -1,10 +1,12 @@
 "use client";
 
 import Link from "next/link";
-import { useState } from "react";
+import { useMemo, useState } from "react";
+import { popularRank, summarizeAssets } from "@/lib/assets";
 import { fmtNum, fmtPct, fmtUsd } from "@/lib/format";
-import { useMarketData } from "@/lib/hooks";
-import { networkLabel, symbolLabel } from "@/lib/markets";
+import { pickBest, useMarketData } from "@/lib/hooks";
+import type { ReserveState } from "@/lib/market-reads";
+import { ASSET_BY_ID, isStable, networkLabel, symbolLabel } from "@/lib/markets";
 import { piesForStake, requiredStake } from "@/lib/pizza";
 import { Card } from "./ui";
 
@@ -15,12 +17,34 @@ type Mode = "pies" | "stake";
 
 export function Calculator() {
   const market = useMarketData();
+  const [assetId, setAssetId] = useState<string>("auto"); // "auto" = best stablecoin, else an Asset id
   const [choice, setChoice] = useState<string>("best"); // "best" or a reserve key
-  const picked = market.ranked.find((s) => s.reserve.key === choice);
-  const used = picked ?? market.best;
+  const asset = assetId === "auto" ? undefined : ASSET_BY_ID.get(assetId);
+
+  // Reserves open for deposits that this asset choice covers, best APY first.
+  const candidates = useMemo(() => {
+    if (!asset) return market.ranked.filter((s) => isStable(s.reserve));
+    const keys = new Set(asset.reserves.map((r) => r.key));
+    return market.ranked.filter((s) => keys.has(s.reserve.key));
+  }, [market.ranked, asset]);
+  const bestOfCandidates = pickBest(candidates);
+  const picked = candidates.find((s) => s.reserve.key === choice);
+  const used = picked ?? bestOfCandidates;
   const live = used?.apy;
   const apy = live ?? FALLBACK_APY;
-  const failed = !market.isLoading && market.ranked.length === 0;
+  const failed = !market.isLoading && candidates.length === 0;
+  const assetLabel = asset?.label ?? (used ? symbolLabel(used.reserve) : "stablecoin");
+  const nonStable = !!used && !(asset ? asset.stable : isStable(used.reserve));
+
+  // Assets that currently accept deposits, with their best APY, for the selector.
+  const options = useMemo(() => {
+    const list = summarizeAssets(market.reserves)
+      .filter((x) => x.bestApy !== undefined)
+      .map((x) => ({ a: x.asset, apy: x.bestApy! }));
+    const sorter = (x: { a: { label: string } }, y: { a: { label: string } }) =>
+      popularRank(x.a.label) - popularRank(y.a.label) || x.a.label.localeCompare(y.a.label);
+    return { stable: list.filter((o) => o.a.stable).sort(sorter), other: list.filter((o) => !o.a.stable).sort(sorter) };
+  }, [market.reserves]);
 
   const [mode, setMode] = useState<Mode>("pies");
   const [piesText, setPiesText] = useState("2");
@@ -35,7 +59,7 @@ export function Calculator() {
 
   const result =
     mode === "pies"
-      ? { main: fmtUsd(requiredStake(pies, price, apy)), label: "USDC to stake", low: fmtUsd(requiredStake(pies, price, hi)), high: fmtUsd(requiredStake(pies, price, lo)) }
+      ? { main: fmtUsd(requiredStake(pies, price, apy)), label: `USD to stake, as ${assetLabel}`, low: fmtUsd(requiredStake(pies, price, hi)), high: fmtUsd(requiredStake(pies, price, lo)) }
       : { main: `${fmtNum(piesForStake(stake, price, apy), 1)} pies/mo`, label: "your monthly pizza", low: `${fmtNum(piesForStake(stake, price, lo), 1)}`, high: `${fmtNum(piesForStake(stake, price, hi), 1)}` };
 
   return (
@@ -43,7 +67,7 @@ export function Calculator() {
       <div className="block">
         <div className="flex items-center justify-between gap-2">
           <label htmlFor="calc-amount" className="text-sm font-medium">
-            {mode === "pies" ? "Pies per month" : "USDC to stake"}
+            {mode === "pies" ? "Pies per month" : "USD to stake"}
           </label>
           <div className="flex gap-1 rounded-lg bg-border/40 p-0.5 text-xs font-semibold" role="radiogroup" aria-label="Calculate from">
             {(["pies", "stake"] as const).map((m) => (
@@ -54,12 +78,12 @@ export function Calculator() {
                 onClick={() => setMode(m)}
                 className={`min-h-8 rounded-md px-3 ${mode === m ? "bg-card shadow" : "text-muted"}`}
               >
-                {m === "pies" ? "🍕 Pies" : "$ USDC"}
+                {m === "pies" ? "🍕 Pies" : "$ USD"}
               </button>
             ))}
           </div>
         </div>
-        <div className="relative mt-1">
+        <div className="mt-1 flex gap-2">
           <input
             id="calc-amount"
             inputMode="decimal"
@@ -69,11 +93,38 @@ export function Calculator() {
               if (mode === "pies") setPiesText(v);
               else setStakeText(v);
             }}
-            className="w-full rounded-xl border border-border bg-background py-2 pl-3 pr-20 text-lg"
+            className="min-w-0 flex-1 rounded-xl border border-border bg-background px-3 py-2 text-lg"
           />
-          <span className="pointer-events-none absolute inset-y-0 right-3 flex items-center text-sm text-muted">
-            {mode === "pies" ? "pies/mo" : "USDC"}
-          </span>
+          <select
+            aria-label="Asset to stake"
+            value={assetId}
+            onChange={(e) => {
+              setAssetId(e.target.value);
+              setChoice("best");
+            }}
+            className="w-[7.5rem] shrink-0 truncate rounded-xl border border-border bg-background px-2 py-2 text-base sm:w-44"
+          >
+            <option value="auto">Best stable</option>
+            {options.stable.length > 0 && (
+              <optgroup label="Stablecoins">
+                {options.stable.map(({ a, apy: x }) => (
+                  <option key={a.id} value={a.id}>
+                    {a.label} · {fmtPct(x)}
+                  </option>
+                ))}
+              </optgroup>
+            )}
+            {options.other.length > 0 && (
+              <optgroup label="Other assets">
+                {options.other.map(({ a, apy: x }) => (
+                  <option key={a.id} value={a.id}>
+                    {a.label} · {fmtPct(x)}
+                  </option>
+                ))}
+              </optgroup>
+            )}
+            {asset && !options.stable.concat(options.other).some((o) => o.a.id === asset.id) && <option value={asset.id}>{asset.label}</option>}
+          </select>
         </div>
       </div>
 
@@ -101,15 +152,21 @@ export function Calculator() {
         {market.isLoading && "Fetching live Aave rates…"}
         {used && live !== undefined && (
           <>
-            {picked ? "Using" : "Best live Aave v3 USDC rate:"} <strong className="text-foreground">{fmtPct(live)}</strong> on{" "}
-            <strong className="text-foreground">{networkLabel(used.reserve)}</strong> ({symbolLabel(used.reserve)}). Range uses{" "}
-            {fmtPct(lo)} to {fmtPct(hi)}.
+            {picked ? "Using" : `Best live Aave v3 ${asset ? asset.label : "stablecoin"} rate:`}{" "}
+            <strong className="text-foreground">{fmtPct(live)}</strong> on{" "}
+            <strong className="text-foreground">{networkLabel(used.reserve)}</strong> ({symbolLabel(used.reserve, asset?.native)}). Range
+            uses {fmtPct(lo)} to {fmtPct(hi)}.
           </>
         )}
         {failed && `Couldn't reach Aave, so this uses an estimated ${fmtPct(FALLBACK_APY)} APY.`}
       </p>
+      {nonStable && (
+        <p className="mt-1 text-sm text-muted">
+          Paid in {assetLabel}; pizza value moves with its price.
+        </p>
+      )}
 
-      {market.ranked.length > 0 && (
+      {candidates.length > 0 && (
         <details className="group mt-2 rounded-xl border border-border">
           <summary className="flex min-h-11 cursor-pointer list-none items-center justify-between px-3 text-sm font-semibold">
             Rates by network
@@ -119,12 +176,12 @@ export function Calculator() {
           </summary>
           <ul className="divide-y divide-border border-t border-border text-sm">
             <li>
-              <RateRow label="Best rate (automatic)" apy={market.best?.apy} active={choice === "best"} onPick={() => setChoice("best")} />
+              <RateRow label="Best rate (automatic)" apy={bestOfCandidates?.apy} active={choice === "best"} onPick={() => setChoice("best")} />
             </li>
-            {market.ranked.map((s) => (
+            {candidates.map((s: ReserveState) => (
               <li key={s.reserve.key}>
                 <RateRow
-                  label={`${networkLabel(s.reserve)} · ${symbolLabel(s.reserve)}${s.reserve.key !== market.best?.reserve.key && s.apy! > (market.best?.apy ?? 0) ? " · low liquidity" : ""}`}
+                  label={`${networkLabel(s.reserve)} · ${symbolLabel(s.reserve, asset?.native)}${s.reserve.key !== bestOfCandidates?.reserve.key && s.apy > (bestOfCandidates?.apy ?? 0) ? " · low liquidity" : ""}`}
                   apy={s.apy}
                   active={choice === s.reserve.key}
                   onPick={() => setChoice(s.reserve.key)}

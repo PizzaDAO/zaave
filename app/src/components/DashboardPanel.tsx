@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { useState } from "react";
 import { useAccount } from "wagmi";
-import { fmtNum, fmtPct, fmtUsdc, parseUsdc } from "@/lib/format";
+import { fmtNum, fmtPct, fmtToken, fmtUsd6, fmtUsdc, parseUsdc } from "@/lib/format";
 import { usePiePrice, usePortfolio } from "@/lib/hooks";
 import { networkLabel, symbolLabel } from "@/lib/markets";
 import {
@@ -20,21 +20,21 @@ import { Button, Card, Notice, Stat } from "./ui";
 
 export function DashboardPanel() {
   const { address } = useAccount();
-  const { positions, totals, unreachable, isLoading } = usePortfolio();
+  const { positions, totals, unreachable, userFailed, isLoading } = usePortfolio();
   const { piePrice, setPiePrice } = usePiePrice();
   const [priceText, setPriceText] = useState("");
 
   if (!address) return null;
-  const { balance6, interest6, lifetime6 } = totals;
+  const { balanceUsd: balance6, interestUsd: interest6, lifetimeUsd: lifetime6 } = totals;
   const principal6 = balance6 > interest6 ? balance6 - interest6 : 0n;
   const milli = milliSlicesOf(interest6, piePrice);
   const { pies, slices } = pieAndSlices(slicesOf(interest6, piePrice));
   const meterSlices = Number(milli % 8000n) / 1000;
 
   // Projected pies/month: sum of balance x APY over every position (each at its own rate).
-  const rated = positions.filter((p) => p.apy !== undefined);
-  const monthly = rated.reduce((n, p) => n + piesPerMonth(p.balance6, piePrice, p.apy!), 0);
-  const blendedApy = balance6 > 0n ? rated.reduce((n, p) => n + Number(p.balance6) * p.apy!, 0) / Number(balance6) : undefined;
+  const rated = positions;
+  const monthly = rated.reduce((n, p) => n + piesPerMonth(p.balanceUsd, piePrice, p.apy), 0);
+  const blendedApy = balance6 > 0n ? rated.reduce((n, p) => n + Number(p.balanceUsd) * p.apy, 0) / Number(balance6) : undefined;
   const daysLeft = blendedApy !== undefined ? daysToNextPie(interest6, piePrice, balance6, blendedApy) : undefined;
   const allTimeCount = positions.filter((p) => p.basis === "allTime").length;
 
@@ -44,6 +44,11 @@ export function DashboardPanel() {
 
   return (
     <div className="space-y-4">
+      {userFailed.length > 0 && (
+        <Notice tone="warn">
+          Couldn&apos;t read your positions on {userFailed.join(", ")}, so they aren&apos;t in the totals below.
+        </Notice>
+      )}
       {unreachable.length > 0 && (
         <Notice tone="warn">
           Couldn&apos;t reach {unreachable.join(", ")}, so those networks aren&apos;t in the totals below. Try again in a
@@ -68,7 +73,7 @@ export function DashboardPanel() {
 
       <Card>
         <div className="grid grid-cols-2 gap-4">
-          <Stat label="Total balance" value={`$${fmtUsdc(balance6)}`} hint="all networks, principal + interest" />
+          <Stat label="Total balance" value={`$${fmtUsdc(balance6)}`} hint="all networks and assets, in USD" />
           <Stat label="Principal" value={`$${fmtUsdc(principal6)}`} />
           <Stat label="Pizza money" value={`$${fmtUsdc(interest6, 4)}`} hint="interest earned" />
           <Stat
@@ -91,23 +96,30 @@ export function DashboardPanel() {
       </Card>
 
       {positions.length > 0 && (
-        <Card title="By network">
+        <Card title="Positions">
           <ul className="divide-y divide-border">
             {positions.map((p) => (
               <li key={p.reserve.key} className="py-3 first:pt-0 last:pb-0">
                 <div className="flex items-baseline justify-between gap-2">
                   <div className="min-w-0 font-semibold">
-                    {networkLabel(p.reserve)} <span className="font-normal text-muted">· {symbolLabel(p.reserve)}</span>
+                    {symbolLabel(p.reserve)} <span className="font-normal text-muted">· {networkLabel(p.reserve)}</span>
                   </div>
-                  <div className="shrink-0 text-sm text-muted">{p.apy === undefined ? "-" : `${fmtPct(p.apy)} APY`}</div>
+                  <div className="shrink-0 text-sm text-muted">{fmtPct(p.apy)} APY</div>
                 </div>
                 <div className="mt-1 grid grid-cols-2 gap-x-3 text-sm">
                   <div>
-                    <span className="text-muted">Balance </span>${fmtUsdc(p.balance, 2, p.reserve.decimals)}
+                    <div className="text-muted">Balance</div>
+                    <div>
+                      {fmtToken(p.balance, p.reserve.decimals)} {symbolLabel(p.reserve)}
+                    </div>
+                    <div className="text-xs text-muted">{fmtUsd6(p.balanceUsd)}</div>
                   </div>
                   <div>
-                    <span className="text-muted">Interest </span>
-                    {p.interest === undefined ? "-" : `$${fmtUsdc(p.interest, 4, p.reserve.decimals)}`}
+                    <div className="text-muted">Interest</div>
+                    <div>
+                      {p.interest === undefined ? "-" : `${fmtToken(p.interest, p.reserve.decimals)} ${symbolLabel(p.reserve)}`}
+                    </div>
+                    <div className="text-xs text-muted">{fmtUsd6(p.interestUsd, 4)}</div>
                   </div>
                 </div>
                 <div className="mt-0.5 text-xs text-muted">
@@ -121,9 +133,9 @@ export function DashboardPanel() {
 
       {empty && (
         <Notice>
-          You don&apos;t hold any Aave USDC yet.{" "}
+          You haven&apos;t supplied anything to Aave yet.{" "}
           <Link href="/stake" className="font-semibold underline">
-            Stake some USDC
+            Stake some crypto
           </Link>{" "}
           to start earning pizza money.
         </Notice>
@@ -131,7 +143,7 @@ export function DashboardPanel() {
 
       <Card title="My pie price">
         <p className="mb-3 text-sm text-muted">
-          Display only: it changes how many pies you see, never the USDC you&apos;ve earned. Saved in this browser.
+          Display only: it changes how many pies you see, never the interest you&apos;ve earned. Saved in this browser.
           Currently ${fmtUsdc(piePrice)}.
         </p>
         <div className="flex gap-2">

@@ -100,7 +100,8 @@ export async function fetchMarketHistory(args: {
 }): Promise<Record<string, UsdcEvent[]>> {
   const byAsset: Record<string, UsdcEvent[]> = {};
   let cursor: string | null = null;
-  for (let page = 0; page < 20; page++) {
+  // Up to 3,000 events (60 pages of 50): one market's list covers all of the user's reserves in it.
+  for (let page = 0; page < 60; page++) {
     const res = await fetch(AAVE_API, {
       method: "POST",
       headers: { "content-type": "application/json" },

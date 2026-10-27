@@ -12,7 +12,7 @@ export function Gate({ children }: { children: ReactNode }) {
   if (!isConnected) {
     return (
       <Card title="Connect your wallet">
-        <p className="mb-4 text-sm text-muted">Connect a wallet to continue. Zaave works on every Aave v3 network with USDC.</p>
+        <p className="mb-4 text-sm text-muted">Connect a wallet to continue. Zaave works with every asset you can supply on Aave v3, on every network that has a market.</p>
         <ConnectButton />
       </Card>
     );

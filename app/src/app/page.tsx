@@ -5,7 +5,7 @@ export default function Home() {
     <div className="space-y-6">
       <div className="text-center">
         <h1 className="text-4xl font-extrabold tracking-tight sm:text-5xl">
-          Stake USDC. <span className="text-tomato">Eat pizza.</span>
+          Supply crypto. <span className="text-tomato">Eat pizza.</span>
         </h1>
       </div>
       <Calculator />

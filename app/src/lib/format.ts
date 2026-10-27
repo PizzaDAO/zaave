@@ -33,6 +33,26 @@ export function parseUsdc(text: string, decimals = USDC_DECIMALS): bigint | unde
   }
 }
 
+/**
+ * A token amount for display: up to `maxFraction` decimals with trailing zeros trimmed, and
+ * "<0.000001" for dust. Display only; never parse this back into a transaction amount.
+ */
+export function fmtToken(value: bigint | undefined, decimals: number, maxFraction = 6): string {
+  if (value === undefined) return "-";
+  if (value === 0n) return "0";
+  const n = Number(formatUnits(value, decimals));
+  const min = 10 ** -maxFraction;
+  if (n < min) return `<${min.toFixed(maxFraction)}`;
+  // Fewer decimals for big numbers (1,234.56) and more for small ones (0.000123).
+  const frac = n >= 1000 ? 2 : n >= 1 ? Math.min(4, maxFraction) : maxFraction;
+  return n.toLocaleString("en-US", { minimumFractionDigits: 0, maximumFractionDigits: frac });
+}
+
+/** "$1,234.56" from a USD6 value. */
+export function fmtUsd6(value: bigint | undefined, maxFraction = 2): string {
+  return value === undefined ? "-" : `$${fmtUsdc(value, maxFraction)}`;
+}
+
 export function fmtCountdown(seconds: number): string {
   if (seconds <= 0) return "now";
   const d = Math.floor(seconds / 86400);
