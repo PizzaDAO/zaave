@@ -42,6 +42,14 @@ export function requiredStake(piesWanted: number, piePriceUsd: number, apy: numb
   return (piesWanted * piePriceUsd * 12) / apy;
 }
 
+/** Days until the next whole pie, given interest so far, balance and APY. Undefined when there is no yield. */
+export function daysToNextPie(interest: bigint, piePrice: bigint, balance: bigint, apy: number): number | undefined {
+  if (piePrice <= 0n || balance <= 0n || apy <= 0) return undefined;
+  const remaining = Number(piePrice - (interest % piePrice)) / 1e6;
+  const perDay = ((Number(balance) / 1e6) * apy) / 365;
+  return perDay > 0 ? remaining / perDay : undefined;
+}
+
 /** Inverse: pies/month for a given stake in USD. */
 export function piesForStake(stakeUsd: number, piePriceUsd: number, apy: number): number {
   if (piePriceUsd <= 0) return 0;

@@ -2,66 +2,49 @@
 
 import { useState } from "react";
 import { useAccount } from "wagmi";
-import { formatUnits, zeroAddress } from "viem";
+import { formatUnits } from "viem";
+import { poolAbi } from "@/lib/abis";
 import { fmtUsdc, parseUsdc } from "@/lib/format";
-import { useTx, useZaaveChain, useZaaveData } from "@/lib/hooks";
-import { zaaveAbi } from "@/lib/zaaveAbi";
+import { useAaveChain, usePizzaMoney, useTx } from "@/lib/hooks";
+import { USDC_DECIMALS } from "@/lib/pizza";
 import { Button, Card, Notice, TxStatus } from "./ui";
 
 export function RedeemPanel() {
-  const { chainId, zaave } = useZaaveChain();
-  const d = useZaaveData();
+  const { chainId, cfg } = useAaveChain();
   const { address } = useAccount();
+  const money = usePizzaMoney();
   const cashTx = useTx();
-  const giftTx = useTx();
-  const harvestTx = useTx();
   const [cashText, setCashText] = useState("");
-  const [giftText, setGiftText] = useState("");
-  const [email, setEmail] = useState("");
 
-  if (!zaave) return null;
-  // Redeeming only spends harvested credit; new yield from the last Za Day needs a harvest first.
-  const available = d.credit ?? 0n;
-  const claimable = d.claimableYield ?? 0n;
+  if (!address) return null;
+  const available = money.interest ?? 0n;
   const cashAmt = parseUsdc(cashText);
-  const giftAmt = parseUsdc(giftText);
-  const giftEnabled = !!d.fulfillment && d.fulfillment !== zeroAddress;
 
   return (
     <div className="space-y-4">
       <Card>
-        <div className="text-xs uppercase tracking-wide text-muted">Available to redeem</div>
-        <div className="text-3xl font-extrabold">${fmtUsdc(available)}</div>
-        {claimable > 0n && address && (
-          <>
-            <Button
-              variant="ghost"
-              className="mt-3 w-full"
-              disabled={harvestTx.busy}
-              onClick={() =>
-                harvestTx.run((write) =>
-                  write({ address: zaave, abi: zaaveAbi, functionName: "harvest", args: [address], chainId }),
-                )
-              }
-            >
-              Harvest ${fmtUsdc(claimable)} from Za Day
-            </Button>
-            <TxStatus tx={harvestTx} />
-          </>
-        )}
+        <div className="text-xs uppercase tracking-wide text-muted">Pizza money available</div>
+        <div className="text-3xl font-extrabold">${fmtUsdc(money.interest, 4)}</div>
+        <div className="text-xs text-muted">
+          {money.basis === "allTime" ? "Interest earned, all time" : "Interest earned since your last deposit or withdrawal"}
+        </div>
       </Card>
 
-      <Card title="Cash out USDC">
-        <p className="mb-3 text-sm text-muted">Take your pizza money as USDC and buy your own pie.</p>
+      <Card title="Cash out your pizza money">
+        <p className="mb-3 text-sm text-muted">
+          Withdraw just your interest as USDC to your wallet and buy your own pie. Your principal stays in Aave, still
+          earning.
+        </p>
         <div className="flex gap-2">
           <input
             inputMode="decimal"
             placeholder="0.00"
+            aria-label="USDC interest to cash out"
             value={cashText}
             onChange={(e) => setCashText(e.target.value)}
             className="min-w-0 flex-1 rounded-xl border border-border bg-background px-3 py-2 text-lg"
           />
-          <Button variant="ghost" onClick={() => setCashText(formatUnits(available, 6))}>
+          <Button variant="ghost" onClick={() => setCashText(formatUnits(available, USDC_DECIMALS))}>
             Max
           </Button>
         </div>
@@ -69,50 +52,28 @@ export function RedeemPanel() {
           className="mt-3 w-full"
           disabled={!cashAmt || cashAmt > available || cashTx.busy}
           onClick={() =>
-            cashAmt && cashTx.run((write) => write({ address: zaave, abi: zaaveAbi, functionName: "cashOut", args: [cashAmt], chainId }))
+            cashAmt &&
+            cashTx.run((write) =>
+              write({
+                address: cfg.aavePool,
+                abi: poolAbi,
+                functionName: "withdraw",
+                args: [cfg.usdc, cashAmt, address],
+                chainId,
+              }),
+            )
           }
         >
           Cash out
         </Button>
+        {cashAmt !== undefined && cashAmt > available && (
+          <p className="mt-2 text-sm text-tomato">That&apos;s more than your pizza money.</p>
+        )}
         <TxStatus tx={cashTx} />
       </Card>
 
-      <Card title="DoorDash gift card">
-        {!giftEnabled ? (
-          <Notice>DoorDash gift cards: coming soon. Cash out USDC in the meantime.</Notice>
-        ) : (
-          <>
-            <p className="mb-3 text-sm text-muted">
-              Redeem credit for a DoorDash gift card. Fulfillment backend is still TBD, so the email below is not stored
-              anywhere yet.
-            </p>
-            <input
-              type="email"
-              placeholder="you@example.com"
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
-              className="mb-2 w-full rounded-xl border border-border bg-background px-3 py-2 text-lg"
-            />
-            <input
-              inputMode="decimal"
-              placeholder="Amount in USDC"
-              value={giftText}
-              onChange={(e) => setGiftText(e.target.value)}
-              className="w-full rounded-xl border border-border bg-background px-3 py-2 text-lg"
-            />
-            <Button
-              className="mt-3 w-full"
-              disabled={!giftAmt || giftAmt > available || !email.includes("@") || giftTx.busy}
-              onClick={() =>
-                giftAmt &&
-                giftTx.run((write) => write({ address: zaave, abi: zaaveAbi, functionName: "redeemForGiftCard", args: [giftAmt], chainId }))
-              }
-            >
-              Redeem for gift card
-            </Button>
-            <TxStatus tx={giftTx} />
-          </>
-        )}
+      <Card title="DoorDash gift cards">
+        <Notice>DoorDash gift cards: coming soon. Cash out USDC in the meantime.</Notice>
       </Card>
     </div>
   );

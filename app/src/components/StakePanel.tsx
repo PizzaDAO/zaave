@@ -1,51 +1,57 @@
 "use client";
 
 import { useState } from "react";
+import { erc20Abi, formatUnits, maxUint256 } from "viem";
+import { useAccount } from "wagmi";
+import { poolAbi } from "@/lib/abis";
 import { fmtUsdc, parseUsdc } from "@/lib/format";
-import { useTx, useUsdc, useZaaveChain, useZaaveData } from "@/lib/hooks";
-import { zaaveAbi } from "@/lib/zaaveAbi";
-import { erc20Abi } from "viem";
+import { useAaveChain, useAaveData, useTx } from "@/lib/hooks";
+import { USDC_DECIMALS } from "@/lib/pizza";
 import { Button, Card, Notice, Stat, TxStatus } from "./ui";
 
 export function StakePanel() {
-  const { chainId, cfg, zaave } = useZaaveChain();
-  const { principal, tvlCap, totalPrincipal } = useZaaveData();
-  const { balance, allowance } = useUsdc();
+  const { chainId, cfg } = useAaveChain();
+  const { address } = useAccount();
+  const { usdcBalance, allowance, aUsdcBalance } = useAaveData();
   const depositTx = useTx();
   const withdrawTx = useTx();
   const [depositText, setDepositText] = useState("");
   const [withdrawText, setWithdrawText] = useState("");
 
-  if (!zaave) return null;
+  if (!address) return null;
   const depositAmt = parseUsdc(depositText);
   const withdrawAmt = parseUsdc(withdrawText);
   const needsApproval = depositAmt !== undefined && (allowance ?? 0n) < depositAmt;
-  const overBalance = depositAmt !== undefined && balance !== undefined && depositAmt > balance;
-  const room = tvlCap !== undefined && totalPrincipal !== undefined ? tvlCap - totalPrincipal : undefined;
-  const overCap = depositAmt !== undefined && room !== undefined && depositAmt > room;
-  const overWithdraw = withdrawAmt !== undefined && principal !== undefined && withdrawAmt > principal;
+  const overBalance = depositAmt !== undefined && usdcBalance !== undefined && depositAmt > usdcBalance;
+  const overWithdraw = withdrawAmt !== undefined && aUsdcBalance !== undefined && withdrawAmt > aUsdcBalance;
 
   const onDeposit = () => {
     if (!depositAmt) return;
     depositTx.run((write) =>
       needsApproval
-        ? write({ address: cfg.usdc, abi: erc20Abi, functionName: "approve", args: [zaave, depositAmt], chainId })
-        : write({ address: zaave, abi: zaaveAbi, functionName: "deposit", args: [depositAmt], chainId }),
+        ? write({ address: cfg.usdc, abi: erc20Abi, functionName: "approve", args: [cfg.aavePool, depositAmt], chainId })
+        : write({
+            address: cfg.aavePool,
+            abi: poolAbi,
+            functionName: "supply",
+            args: [cfg.usdc, depositAmt, address, 0],
+            chainId,
+          }),
     );
   };
 
   return (
     <div className="space-y-4">
+      <Notice>
+        Your USDC goes straight into Aave v3 on {cfg.name}. You hold aUSDC in your own wallet; Zaave never touches your
+        funds.
+      </Notice>
+
       <Card>
         <div className="grid grid-cols-2 gap-4">
-          <Stat label="Your stake" value={`$${fmtUsdc(principal)}`} />
-          <Stat label="Wallet USDC" value={`$${fmtUsdc(balance)}`} />
+          <Stat label="Your aUSDC" value={`$${fmtUsdc(aUsdcBalance)}`} hint="earning interest in Aave" />
+          <Stat label="Wallet USDC" value={`$${fmtUsdc(usdcBalance)}`} />
         </div>
-        {tvlCap !== undefined && (
-          <p className="mt-3 text-xs text-muted">
-            Early-access cap: ${fmtUsdc(totalPrincipal, 0)} of ${fmtUsdc(tvlCap, 0)} filled.
-          </p>
-        )}
       </Card>
 
       <Card title="Stake USDC">
@@ -53,20 +59,27 @@ export function StakePanel() {
           <input
             inputMode="decimal"
             placeholder="0.00"
+            aria-label="USDC amount to stake"
             value={depositText}
             onChange={(e) => setDepositText(e.target.value)}
             className="min-w-0 flex-1 rounded-xl border border-border bg-background px-3 py-2 text-lg"
           />
-          <Button variant="ghost" onClick={() => balance !== undefined && setDepositText((Number(balance) / 1e6).toString())}>
+          <Button
+            variant="ghost"
+            onClick={() => usdcBalance !== undefined && setDepositText(formatUnits(usdcBalance, USDC_DECIMALS))}
+          >
             Max
           </Button>
         </div>
-        <Button className="mt-3 w-full" disabled={!depositAmt || depositTx.busy || overBalance || overCap} onClick={onDeposit}>
-          {needsApproval ? "1. Approve USDC" : "Deposit"}
+        <Button className="mt-3 w-full" disabled={!depositAmt || depositTx.busy || overBalance} onClick={onDeposit}>
+          {needsApproval ? "1. Approve USDC" : "Stake"}
         </Button>
-        {needsApproval && <p className="mt-2 text-xs text-muted">Approve first, then press again to deposit.</p>}
+        {needsApproval && (
+          <p className="mt-2 text-xs text-muted">
+            Approves exactly this amount for the Aave Pool, then press again to stake.
+          </p>
+        )}
         {overBalance && <p className="mt-2 text-sm text-tomato">That&apos;s more than your wallet balance.</p>}
-        {overCap && <p className="mt-2 text-sm text-tomato">That would exceed the early-access cap.</p>}
         <TxStatus tx={depositTx} />
         {cfg.name === "Base Sepolia" && (
           <div className="mt-3">
@@ -76,11 +89,12 @@ export function StakePanel() {
       </Card>
 
       <Card title="Withdraw">
-        <p className="mb-3 text-sm text-muted">Your principal is always yours. Withdraw any time.</p>
+        <p className="mb-3 text-sm text-muted">Your aUSDC is yours. Withdraw back to USDC any time (subject to pool liquidity).</p>
         <div className="flex gap-2">
           <input
             inputMode="decimal"
             placeholder="0.00"
+            aria-label="USDC amount to withdraw"
             value={withdrawText}
             onChange={(e) => setWithdrawText(e.target.value)}
             className="min-w-0 flex-1 rounded-xl border border-border bg-background px-3 py-2 text-lg"
@@ -90,7 +104,13 @@ export function StakePanel() {
             onClick={() =>
               withdrawAmt &&
               withdrawTx.run((write) =>
-                write({ address: zaave, abi: zaaveAbi, functionName: "withdraw", args: [withdrawAmt], chainId }),
+                write({
+                  address: cfg.aavePool,
+                  abi: poolAbi,
+                  functionName: "withdraw",
+                  args: [cfg.usdc, withdrawAmt, address],
+                  chainId,
+                }),
               )
             }
           >
@@ -100,14 +120,22 @@ export function StakePanel() {
         <Button
           variant="ghost"
           className="mt-3 w-full"
-          disabled={!principal || withdrawTx.busy}
+          disabled={!aUsdcBalance || withdrawTx.busy}
           onClick={() =>
-            withdrawTx.run((write) => write({ address: zaave, abi: zaaveAbi, functionName: "withdrawAll", chainId }))
+            withdrawTx.run((write) =>
+              write({
+                address: cfg.aavePool,
+                abi: poolAbi,
+                functionName: "withdraw",
+                args: [cfg.usdc, maxUint256, address],
+                chainId,
+              }),
+            )
           }
         >
           Withdraw all
         </Button>
-        {overWithdraw && <p className="mt-2 text-sm text-tomato">That&apos;s more than your stake.</p>}
+        {overWithdraw && <p className="mt-2 text-sm text-tomato">That&apos;s more than your aUSDC balance.</p>}
         <TxStatus tx={withdrawTx} />
       </Card>
     </div>
