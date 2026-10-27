@@ -362,6 +362,36 @@ contract ZaaveTest is Test {
         z.cashOut(c);
     }
 
+    function test_cashOutWorksWhenAaveIlliquid() public {
+        uint256 c = _withCredit(alice);
+        _accrue(100);
+        _zaDay(); // alice now has unharvested yield for a newer epoch
+        vm.mockCallRevert(
+            address(pool), abi.encodeWithSelector(MockPool.withdraw.selector), "illiquid"
+        );
+        vm.prank(alice);
+        z.cashOut(c);
+        assertEq(z.credit(alice), 0);
+    }
+
+    function test_withdrawFullPrincipalWithDust() public {
+        _accrue(333); // non-round Aave index so aToken minting rounds down
+        _dep(alice, 123_456_789);
+        uint256 p = z.principal(alice);
+        assertLt(z.valueOf(alice), p, "expected rounding dust");
+        uint256 before = usdc.balanceOf(alice);
+        vm.prank(alice);
+        z.withdraw(p);
+        assertEq(z.principal(alice), 0);
+        assertApproxEqAbs(usdc.balanceOf(alice), before + p, 2);
+    }
+
+    function test_renounceOwnershipDisabled() public {
+        vm.prank(owner);
+        vm.expectRevert(Zaave.RenounceDisabled.selector);
+        z.renounceOwnership();
+    }
+
     function test_redeemForGiftCard() public {
         uint256 c = _withCredit(alice);
         vm.prank(owner);

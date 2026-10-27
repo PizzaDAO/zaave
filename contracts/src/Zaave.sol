@@ -59,6 +59,7 @@ contract Zaave is Ownable2Step, Pausable, ReentrancyGuard {
 
     // ------------------------------------------------------------------ errors
     error ZeroAmount();
+    error RenounceDisabled();
     error ZeroAddress();
     error TvlCapExceeded();
     error InsufficientPrincipal();
@@ -138,6 +139,9 @@ contract Zaave is Ownable2Step, Pausable, ReentrancyGuard {
         if (amount == 0) revert ZeroAmount();
         _harvest(msg.sender);
         if (amount > principal[msg.sender]) revert InsufficientPrincipal();
+        // Withdrawing the full principal goes through the withdrawAll path so 1-2 wei of Aave
+        // rounding dust (value slightly below principal) can't block a full exit.
+        if (amount == principal[msg.sender]) return _withdrawAll();
         if (amount > valueOf(msg.sender)) revert InsufficientValue();
         _withdraw(msg.sender, amount, _toSharesUp(amount), amount);
     }
@@ -147,6 +151,10 @@ contract Zaave is Ownable2Step, Pausable, ReentrancyGuard {
     ///         dust) everything is withdrawn and the principal record is cleared.
     function withdrawAll() external nonReentrant {
         _harvest(msg.sender);
+        _withdrawAll();
+    }
+
+    function _withdrawAll() internal {
         uint256 p = principal[msg.sender];
         uint256 v = valueOf(msg.sender);
         if (p == 0) revert ZeroAmount();
@@ -180,7 +188,6 @@ contract Zaave is Ownable2Step, Pausable, ReentrancyGuard {
 
     function cashOut(uint256 amount) external nonReentrant {
         if (amount == 0) revert ZeroAmount();
-        _harvest(msg.sender);
         if (amount > credit[msg.sender]) revert InsufficientCredit();
         credit[msg.sender] -= amount;
         totalCredit -= amount;
@@ -197,7 +204,6 @@ contract Zaave is Ownable2Step, Pausable, ReentrancyGuard {
         address f = fulfillment;
         if (f == address(0)) revert FulfillmentNotSet();
         if (amount == 0) revert ZeroAmount();
-        _harvest(msg.sender);
         if (amount > credit[msg.sender]) revert InsufficientCredit();
         credit[msg.sender] -= amount;
         totalCredit -= amount;
@@ -207,6 +213,11 @@ contract Zaave is Ownable2Step, Pausable, ReentrancyGuard {
     }
 
     // ================================================================== admin
+
+    /// @dev Disabled: renouncing while paused would permanently block deposits and gift cards.
+    function renounceOwnership() public pure override {
+        revert RenounceDisabled();
+    }
 
     function setTvlCap(uint256 cap) external onlyOwner {
         tvlCap = cap;
