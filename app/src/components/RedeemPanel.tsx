@@ -1,7 +1,8 @@
 "use client";
 
 import { useState } from "react";
-import { zeroAddress } from "viem";
+import { useAccount } from "wagmi";
+import { formatUnits, zeroAddress } from "viem";
 import { fmtUsdc, parseUsdc } from "@/lib/format";
 import { useTx, useZaaveChain, useZaaveData } from "@/lib/hooks";
 import { zaaveAbi } from "@/lib/zaaveAbi";
@@ -10,15 +11,18 @@ import { Button, Card, Notice, TxStatus } from "./ui";
 export function RedeemPanel() {
   const { chainId, zaave } = useZaaveChain();
   const d = useZaaveData();
+  const { address } = useAccount();
   const cashTx = useTx();
   const giftTx = useTx();
+  const harvestTx = useTx();
   const [cashText, setCashText] = useState("");
   const [giftText, setGiftText] = useState("");
   const [email, setEmail] = useState("");
 
   if (!zaave) return null;
-  // Contract harvests before redeeming, so claimable yield is spendable too.
-  const available = (d.credit ?? 0n) + (d.claimableYield ?? 0n);
+  // Redeeming only spends harvested credit; new yield from the last Za Day needs a harvest first.
+  const available = d.credit ?? 0n;
+  const claimable = d.claimableYield ?? 0n;
   const cashAmt = parseUsdc(cashText);
   const giftAmt = parseUsdc(giftText);
   const giftEnabled = !!d.fulfillment && d.fulfillment !== zeroAddress;
@@ -28,6 +32,23 @@ export function RedeemPanel() {
       <Card>
         <div className="text-xs uppercase tracking-wide text-muted">Available to redeem</div>
         <div className="text-3xl font-extrabold">${fmtUsdc(available)}</div>
+        {claimable > 0n && address && (
+          <>
+            <Button
+              variant="ghost"
+              className="mt-3 w-full"
+              disabled={harvestTx.busy}
+              onClick={() =>
+                harvestTx.run((write) =>
+                  write({ address: zaave, abi: zaaveAbi, functionName: "harvest", args: [address], chainId }),
+                )
+              }
+            >
+              Harvest ${fmtUsdc(claimable)} from Za Day
+            </Button>
+            <TxStatus tx={harvestTx} />
+          </>
+        )}
       </Card>
 
       <Card title="Cash out USDC">
@@ -40,7 +61,7 @@ export function RedeemPanel() {
             onChange={(e) => setCashText(e.target.value)}
             className="min-w-0 flex-1 rounded-xl border border-border bg-background px-3 py-2 text-lg"
           />
-          <Button variant="ghost" onClick={() => setCashText((Number(available) / 1e6).toString())}>
+          <Button variant="ghost" onClick={() => setCashText(formatUnits(available, 6))}>
             Max
           </Button>
         </div>
