@@ -106,12 +106,14 @@ export function explorerUrl(chainId: number): string | undefined {
 
 /** "USDC.e (bridged)" / "USDC". */
 export function symbolLabel(r: Pick<Reserve, "symbol" | "bridged">): string {
-  return r.bridged ? `${r.symbol} (bridged)` : r.symbol;
+  const symbol = r.symbol === "USDCn" ? "USDC" : r.symbol;
+  return r.bridged ? `${symbol} (bridged)` : symbol;
 }
 
 /** "Ethereum · Prime" (the market name is dropped when it is the chain's only market). */
 export function networkLabel(r: Pick<Reserve, "chainId" | "chainName" | "marketName">): string {
   const multi = MARKETS.filter((m) => m.chainId === r.chainId).length > 1;
+  if (r.chainId === 57073) return "Ink (Tydro)";
   return multi ? `${r.chainName} ${r.marketName}` : r.chainName;
 }
 

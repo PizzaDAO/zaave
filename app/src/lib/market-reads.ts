@@ -1,5 +1,5 @@
 // Pure (non-React) pieces of the cross-chain read path, shared by hooks.ts and the node test script.
-import type { Address } from "viem";
+import { erc20Abi, type Address } from "viem";
 import { aTokenAbi, poolAbi } from "./abis";
 import { RESERVES, type Reserve } from "./markets";
 import { rayAprToApy } from "./pizza";
@@ -16,6 +16,10 @@ export type ReserveState = {
   /** Paused or inactive reserves cannot be withdrawn from either. */
   canWithdraw: boolean;
   frozen: boolean;
+  /** Share of supplied USDC currently lent out (0-1). */
+  utilization: number | undefined;
+  /** USDC sitting in the pool that can be withdrawn right now, in the reserve's own decimals. */
+  available: bigint | undefined;
   /** aToken balance in the reserve's own decimals. */
   balance: bigint | undefined;
   scaledBalance: bigint | undefined;
@@ -36,10 +40,14 @@ function decodeConfig(cfg: bigint) {
 export function buildMarketContracts(user: Address | undefined) {
   return RESERVES.flatMap((r) => {
     const rate = { address: r.pool, abi: poolAbi, functionName: "getReserveData", args: [r.underlying], chainId: r.chainId } as const;
-    if (!user) return [rate];
+    const supplied = { address: r.aToken, abi: erc20Abi, functionName: "totalSupply", chainId: r.chainId } as const;
+    const cash = { address: r.underlying, abi: erc20Abi, functionName: "balanceOf", args: [r.aToken], chainId: r.chainId } as const;
+    if (!user) return [rate, supplied, cash];
     const aToken = { address: r.aToken, abi: aTokenAbi, chainId: r.chainId } as const;
     return [
       rate,
+      supplied,
+      cash,
       { ...aToken, functionName: "balanceOf", args: [user] },
       { ...aToken, functionName: "scaledBalanceOf", args: [user] },
       { ...aToken, functionName: "getPreviousIndex", args: [user] },
@@ -51,7 +59,7 @@ type Row = { status: string; result?: unknown };
 
 /** Turns the allowFailure result rows of buildMarketContracts back into one ReserveState per reserve. */
 export function parseMarketRows(data: readonly Row[] | undefined, user: Address | undefined): ReserveState[] {
-  const stride = user ? 4 : 1;
+  const stride = user ? 6 : 3;
   return RESERVES.map((reserve, i) => {
     const at = (k: number) => {
       const row = data?.[i * stride + k];
@@ -59,6 +67,10 @@ export function parseMarketRows(data: readonly Row[] | undefined, user: Address 
     };
     const rd = at(0) as { configuration: bigint; currentLiquidityRate: bigint } | undefined;
     const cfg = rd ? decodeConfig(rd.configuration) : undefined;
+    const supplied = at(1) as bigint | undefined;
+    const cash = at(2) as bigint | undefined;
+    const utilization =
+      supplied && cash !== undefined ? Math.min(1, Math.max(0, 1 - Number((cash * 10_000n) / supplied) / 10_000)) : undefined;
     return {
       reserve,
       reachable: rd !== undefined,
@@ -66,9 +78,11 @@ export function parseMarketRows(data: readonly Row[] | undefined, user: Address 
       canSupply: !!cfg && cfg.active && !cfg.frozen && !cfg.paused,
       canWithdraw: !!cfg && cfg.active && !cfg.paused,
       frozen: !!cfg?.frozen,
-      balance: user ? (at(1) as bigint | undefined) : undefined,
-      scaledBalance: user ? (at(2) as bigint | undefined) : undefined,
-      previousIndex: user ? (at(3) as bigint | undefined) : undefined,
+      utilization,
+      available: cash,
+      balance: user ? (at(3) as bigint | undefined) : undefined,
+      scaledBalance: user ? (at(4) as bigint | undefined) : undefined,
+      previousIndex: user ? (at(5) as bigint | undefined) : undefined,
     };
   });
 }

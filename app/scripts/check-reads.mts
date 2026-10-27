@@ -28,7 +28,7 @@ for (const user of [undefined, ...users]) {
   const ranked = reserves.filter((s) => s.canSupply && s.apy !== undefined).sort((a, b) => b.apy! - a.apy!);
   if (!user) {
     console.log("rates (supply-open reserves):");
-    for (const s of ranked) console.log(`  ${(s.apy! * 100).toFixed(2).padStart(6)}%  ${networkLabel(s.reserve)} ${symbolLabel(s.reserve)}`);
+    for (const s of ranked) console.log(`  ${(s.apy! * 100).toFixed(2).padStart(6)}%  ${networkLabel(s.reserve)} ${symbolLabel(s.reserve)}  available: $${s.available === undefined ? "?" : (Number(s.available) / 10 ** s.reserve.decimals).toFixed(0)}`);
     console.log("withdraw-only (frozen):", reserves.filter((s) => s.reachable && !s.canSupply).map((s) => `${networkLabel(s.reserve)} ${s.reserve.symbol}`).join(", "));
     continue;
   }

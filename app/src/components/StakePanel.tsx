@@ -46,6 +46,8 @@ export function StakePanel() {
 
   const onDeposit = () => {
     if (!depositAmt || !reserve) return;
+    // Lock in the default reserve, so a rate re-rank can't move the user between Approve and Stake.
+    if (!pickedKey) setPickedKey(reserve.key);
     depositTx.run({ chainId: reserve.chainId, reserveKey: reserve.key }, (write) =>
       needsApproval
         ? write({
@@ -91,7 +93,7 @@ export function StakePanel() {
           className="w-full rounded-xl border border-border bg-background px-3 py-2 text-base"
         >
           {market.reserves
-            .filter((s) => s.reachable && (s.canSupply || (s.balance ?? 0n) > 0n))
+            .filter((s) => s.reserve.key === reserve?.key || (s.reachable && (s.canSupply || (s.balance ?? 0n) > 0n)))
             .map((s) => (
               <option key={s.reserve.key} value={s.reserve.key}>
                 {networkLabel(s.reserve)} · {symbolLabel(s.reserve)} ·{" "}

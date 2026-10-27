@@ -17,6 +17,9 @@ const POLL_MS = 30_000;
  * chainId into one multicall per chain, and allowFailure lets a dead RPC fail only its own rows.
  * Rates need no wallet; the user's aToken position is added when connected.
  */
+/** "Best" needs at least this much withdrawable USDC in the pool (6 decimals). */
+const MIN_BEST_AVAILABLE = 1_000_000n * 10n ** 6n;
+
 export function useMarketData() {
   const { address } = useAccount();
   const contracts = useMemo(() => buildMarketContracts(address), [address]);
@@ -40,7 +43,11 @@ export function useMarketData() {
     [reserves],
   );
 
-  return { reserves, ranked, best: ranked[0], unreachable, isLoading: result.isLoading };
+  // "Best" skips thin pools, where a large withdrawal could revert until borrowers repay.
+  const best =
+    ranked.find((s) => s.available !== undefined && toUsdc6(s.available, s.reserve.decimals) >= MIN_BEST_AVAILABLE) ?? ranked[0];
+
+  return { reserves, ranked, best, unreachable, isLoading: result.isLoading };
 }
 
 export type Position = {

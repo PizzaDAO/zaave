@@ -124,7 +124,7 @@ export function Calculator() {
             {market.ranked.map((s) => (
               <li key={s.reserve.key}>
                 <RateRow
-                  label={`${networkLabel(s.reserve)} · ${symbolLabel(s.reserve)}`}
+                  label={`${networkLabel(s.reserve)} · ${symbolLabel(s.reserve)}${s.reserve.key !== market.best?.reserve.key && s.apy! > (market.best?.apy ?? 0) ? " · low liquidity" : ""}`}
                   apy={s.apy}
                   active={choice === s.reserve.key}
                   onPick={() => setChoice(s.reserve.key)}
