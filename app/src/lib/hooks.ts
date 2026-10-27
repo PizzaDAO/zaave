@@ -300,17 +300,23 @@ export function useTx() {
   }, [receipt.isSuccess, qc]);
 
   const run = useCallback(
-    async (target: { chainId: number; reserveKey: string }, send: (write: typeof writeContractAsync) => Promise<Hash>) => {
+    async (
+      target: { chainId: number; reserveKey: string; approval?: boolean },
+      send: (write: typeof writeContractAsync) => Promise<Hash>,
+    ) => {
       setError(undefined);
       setHash(undefined);
       setSigning(true);
       try {
         if (walletChainId !== target.chainId) await switchChainAsync({ chainId: target.chainId });
-        const markedAt = Math.floor(Date.now() / 1000) - 60; // allow for clock skew vs block time
-        lastTxAt.set(target.reserveKey, markedAt);
-        setTimeout(() => {
-          if (lastTxAt.get(target.reserveKey) === markedAt) lastTxAt.delete(target.reserveKey);
-        }, HISTORY_LAG_WINDOW * 1000);
+        // Approvals create no supply/withdraw event, so they don't make Aave's history stale.
+        if (!target.approval) {
+          const markedAt = Math.floor(Date.now() / 1000) - 60; // allow for clock skew vs block time
+          lastTxAt.set(target.reserveKey, markedAt);
+          setTimeout(() => {
+            if (lastTxAt.get(target.reserveKey) === markedAt) lastTxAt.delete(target.reserveKey);
+          }, HISTORY_LAG_WINDOW * 1000);
+        }
         setTxChainId(target.chainId);
         setHash(await send(writeContractAsync));
       } catch (e) {

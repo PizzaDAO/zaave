@@ -80,7 +80,7 @@ function CashRow({ position: p }: { position: Position }) {
   const cashNative = () => {
     const gateway = reserve.gateway;
     if (!address || !gateway) return;
-    gatewayTx.run(target, (write) =>
+    gatewayTx.run({ ...target, approval: needsApproval }, (write) =>
       needsApproval
         ? write({ address: reserve.aToken, abi: erc20Abi, functionName: "approve", args: [gateway, interest + interest / 100n + 1n], chainId: reserve.chainId })
         : write({

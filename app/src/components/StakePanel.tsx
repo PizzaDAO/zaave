@@ -8,7 +8,7 @@ import { summarizeAssets } from "@/lib/assets";
 import { fmtPct, fmtToken, fmtUsd6, parseUsdc } from "@/lib/format";
 import { useMarketData, useTx, useWalletReserve } from "@/lib/hooks";
 import type { ReserveState, SupplyBlock } from "@/lib/market-reads";
-import { ASSET_BY_ID, networkLabel, symbolLabel, type Choice } from "@/lib/markets";
+import { ASSET_BY_ID, getReserve, networkLabel, symbolLabel, type Choice } from "@/lib/markets";
 import { toUsd6 } from "@/lib/pizza";
 import { AssetPicker } from "./AssetPicker";
 import { Button, Card, Notice, Stat, TxStatus } from "./ui";
@@ -19,6 +19,8 @@ const BLOCK_TEXT: Record<SupplyBlock, string> = {
   inactive: "inactive",
   cap: "supply cap reached",
 };
+
+const MAINNET_USDT = "0xdac17f958d2ee523a2206206994597c13d831ec7";
 
 export function StakePanel() {
   const { address, chainId: walletChainId } = useAccount();
@@ -67,7 +69,8 @@ export function StakePanel() {
     ((walletHere?.walletBalance ?? 0n) > 0n && walletHere?.canSupply ? walletHere : undefined) ??
     options.find((s) => s.canSupply) ??
     options[0];
-  const state = options.find((s) => s.reserve.key === pickedKey) ?? defaultState;
+  // Once a network is picked or locked in, never fall back to another one if it drops out of a poll.
+  const state = pickedKey ? options.find((s) => s.reserve.key === pickedKey) : defaultState;
   const reserve = state?.reserve;
   const native = !!asset?.native;
   const choice: Choice | undefined = reserve ? { reserve, native } : undefined;
@@ -82,6 +85,8 @@ export function StakePanel() {
   const depositAmt = parseUsdc(depositText, decimals);
   const withdrawAmt = parseUsdc(withdrawText, decimals);
   const needsApproval = !native && depositAmt !== undefined && (wallet.allowance ?? 0n) < depositAmt;
+  const needsReset =
+    needsApproval && (wallet.allowance ?? 0n) > 0n && reserve?.chainId === 1 && reserve.underlying.toLowerCase() === MAINNET_USDT;
   const overBalance = depositAmt !== undefined && wallet.balance !== undefined && depositAmt > wallet.balance;
   const overCap = depositAmt !== undefined && state?.headroom !== undefined && depositAmt > state.headroom;
   const lowGas = native && depositAmt !== undefined && wallet.maxSpend !== undefined && depositAmt > wallet.maxSpend && !overBalance;
@@ -126,13 +131,13 @@ export function StakePanel() {
       );
       return;
     }
-    depositTx.run(target, (write) =>
+    depositTx.run({ ...target, approval: needsApproval }, (write) =>
       needsApproval
         ? write({
             address: reserve.underlying,
             abi: erc20Abi,
             functionName: "approve",
-            args: [reserve.pool, depositAmt],
+            args: [reserve.pool, needsReset ? 0n : depositAmt],
             chainId: reserve.chainId,
           })
         : write({
@@ -150,7 +155,8 @@ export function StakePanel() {
     if (amount === "all") return (aBalance ?? 0n) + (aBalance ?? 0n) / 1000n + 1n; // 0.1% headroom: interest accrues before the tx lands
     return amount;
   };
-  const withdrawNeedsApproval = (amount: bigint | "all") => native && gatewayAllowance < (amount === "all" ? (aBalance ?? 0n) : amount);
+  const withdrawNeedsApproval = (amount: bigint | "all") =>
+    native && gatewayAllowance < (amount === "all" ? (aBalance ?? 0n) + (aBalance ?? 0n) / 1000n : amount);
 
   const withdraw = (amount: bigint | "all") => {
     if (!reserve) return;
@@ -160,7 +166,7 @@ export function StakePanel() {
     if (native) {
       const gateway = reserve.gateway;
       if (!gateway) return;
-      withdrawTx.run(target, (write) =>
+      withdrawTx.run({ ...target, approval: withdrawNeedsApproval(amount) }, (write) =>
         withdrawNeedsApproval(amount)
           ? write({
               address: reserve.aToken,
@@ -212,10 +218,19 @@ export function StakePanel() {
         </label>
         <select
           id="reserve-pick"
-          value={reserve?.key ?? ""}
+          value={pickedKey ?? reserve?.key ?? ""}
           onChange={(e) => pickNetwork(e.target.value)}
           className="w-full rounded-xl border border-border bg-background px-3 py-2 text-base"
         >
+          {pickedKey && !state && (
+            <option value={pickedKey} disabled>
+              {(() => {
+                const r = getReserve(pickedKey);
+                return r ? `${networkLabel(r)} · ${symbolLabel(r, native)}` : pickedKey;
+              })()}{" "}
+              · can&apos;t reach right now
+            </option>
+          )}
           {options.length === 0 && <option value="">{market.isLoading ? "Loading networks…" : "No network has this asset"}</option>}
           {options.map((s) => (
             <option key={s.reserve.key} value={s.reserve.key} disabled={!isUsable(s)}>
@@ -315,7 +330,7 @@ export function StakePanel() {
           disabled={!depositAmt || depositTx.busy || overBalance || overCap || !state?.canSupply}
           onClick={onDeposit}
         >
-          {needsApproval ? `1. Approve ${sym}` : "Stake"}
+          {needsReset ? `1. Reset ${sym} approval` : needsApproval ? `1. Approve ${sym}` : "Stake"}
         </Button>
         {needsApproval && (
           <p className="mt-2 text-xs text-muted">
