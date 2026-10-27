@@ -1,9 +1,11 @@
 "use client";
 
+import Link from "next/link";
 import { useState } from "react";
 import { useAccount } from "wagmi";
 import { fmtNum, fmtPct, fmtUsdc, parseUsdc } from "@/lib/format";
-import { useAaveApy, useAaveChain, usePiePrice, usePizzaMoney } from "@/lib/hooks";
+import { usePiePrice, usePortfolio } from "@/lib/hooks";
+import { networkLabel, symbolLabel } from "@/lib/markets";
 import {
   MAX_PIE_PRICE,
   MIN_PIE_PRICE,
@@ -17,27 +19,38 @@ import { PizzaPie } from "./PizzaPie";
 import { Button, Card, Notice, Stat } from "./ui";
 
 export function DashboardPanel() {
-  const { chainId } = useAaveChain();
   const { address } = useAccount();
-  const money = usePizzaMoney();
-  const apy = useAaveApy(chainId);
+  const { positions, totals, unreachable, isLoading } = usePortfolio();
   const { piePrice, setPiePrice } = usePiePrice();
   const [priceText, setPriceText] = useState("");
 
   if (!address) return null;
-  const balance = money.balance ?? 0n;
-  const interest = money.interest ?? 0n;
-  const principal = balance > interest ? balance - interest : 0n;
-  const milli = milliSlicesOf(interest, piePrice);
-  const { pies, slices } = pieAndSlices(slicesOf(interest, piePrice));
+  const { balance6, interest6, lifetime6 } = totals;
+  const principal6 = balance6 > interest6 ? balance6 - interest6 : 0n;
+  const milli = milliSlicesOf(interest6, piePrice);
+  const { pies, slices } = pieAndSlices(slicesOf(interest6, piePrice));
   const meterSlices = Number(milli % 8000n) / 1000;
-  const monthly = apy.data !== undefined ? piesPerMonth(balance, piePrice, apy.data) : undefined;
-  const daysLeft = apy.data !== undefined ? daysToNextPie(interest, piePrice, balance, apy.data) : undefined;
+
+  // Projected pies/month: sum of balance x APY over every position (each at its own rate).
+  const rated = positions.filter((p) => p.apy !== undefined);
+  const monthly = rated.reduce((n, p) => n + piesPerMonth(p.balance6, piePrice, p.apy!), 0);
+  const blendedApy = balance6 > 0n ? rated.reduce((n, p) => n + Number(p.balance6) * p.apy!, 0) / Number(balance6) : undefined;
+  const daysLeft = blendedApy !== undefined ? daysToNextPie(interest6, piePrice, balance6, blendedApy) : undefined;
+  const allTimeCount = positions.filter((p) => p.basis === "allTime").length;
+
   const newPrice = parseUsdc(priceText);
   const badPrice = newPrice !== undefined && (newPrice < MIN_PIE_PRICE || newPrice > MAX_PIE_PRICE);
+  const empty = !isLoading && positions.length === 0;
 
   return (
     <div className="space-y-4">
+      {unreachable.length > 0 && (
+        <Notice tone="warn">
+          Couldn&apos;t reach {unreachable.join(", ")}, so those networks aren&apos;t in the totals below. Try again in a
+          moment.
+        </Notice>
+      )}
+
       <Card>
         <div className="flex flex-col items-center gap-4 sm:flex-row sm:justify-around">
           <PizzaPie slices={meterSlices} />
@@ -47,7 +60,7 @@ export function DashboardPanel() {
             </div>
             <div className="text-lg font-semibold">+ {slices.toString()} of 8 slices</div>
             <div className="mt-1 text-sm text-muted">
-              worth ${fmtUsdc(money.interest, 4)} at ${fmtUsdc(piePrice)}/pie
+              worth ${fmtUsdc(interest6, 4)} at ${fmtUsdc(piePrice)}/pie
             </div>
           </div>
         </div>
@@ -55,13 +68,13 @@ export function DashboardPanel() {
 
       <Card>
         <div className="grid grid-cols-2 gap-4">
-          <Stat label="aUSDC balance" value={`$${fmtUsdc(money.balance)}`} hint="principal + interest" />
-          <Stat label="Principal" value={`$${fmtUsdc(principal)}`} />
-          <Stat label="Pizza money" value={`$${fmtUsdc(money.interest, 4)}`} hint="interest earned" />
+          <Stat label="Total balance" value={`$${fmtUsdc(balance6)}`} hint="all networks, principal + interest" />
+          <Stat label="Principal" value={`$${fmtUsdc(principal6)}`} />
+          <Stat label="Pizza money" value={`$${fmtUsdc(interest6, 4)}`} hint="interest earned" />
           <Stat
             label="Projected"
-            value={monthly === undefined ? "-" : `${fmtNum(monthly, 2)} pies/mo`}
-            hint={apy.data !== undefined ? `at ${fmtPct(apy.data)} APY` : undefined}
+            value={rated.length === 0 ? "-" : `${fmtNum(monthly, 2)} pies/mo`}
+            hint={blendedApy !== undefined ? `at ${fmtPct(blendedApy)} blended APY` : undefined}
           />
         </div>
         <div className="mt-4 border-t border-border pt-3">
@@ -70,15 +83,51 @@ export function DashboardPanel() {
             {daysLeft === undefined ? "-" : `in ~${Math.max(1, Math.ceil(daysLeft)).toLocaleString("en-US")} days`}
           </div>
         </div>
-        <p className="mt-3 text-xs text-muted">
-          {money.basis === "allTime"
-            ? "Interest basis: all time. Your balance minus the USDC you supplied to Aave (Aave history for this wallet)."
-            : "Interest basis: since your last deposit or withdrawal. Earlier interest isn't counted here."}
-          {money.basis === "allTime" && money.lifetimeEarned !== undefined && (
-            <> Earned all time, including anything you cashed out: ${fmtUsdc(money.lifetimeEarned, 4)}.</>
-          )}
-        </p>
+        {lifetime6 > 0n && (
+          <p className="mt-3 text-xs text-muted">
+            Earned all time, including anything you cashed out: ${fmtUsdc(lifetime6, 4)}.
+          </p>
+        )}
       </Card>
+
+      {positions.length > 0 && (
+        <Card title="By network">
+          <ul className="divide-y divide-border">
+            {positions.map((p) => (
+              <li key={p.reserve.key} className="py-3 first:pt-0 last:pb-0">
+                <div className="flex items-baseline justify-between gap-2">
+                  <div className="min-w-0 font-semibold">
+                    {networkLabel(p.reserve)} <span className="font-normal text-muted">· {symbolLabel(p.reserve)}</span>
+                  </div>
+                  <div className="shrink-0 text-sm text-muted">{p.apy === undefined ? "-" : `${fmtPct(p.apy)} APY`}</div>
+                </div>
+                <div className="mt-1 grid grid-cols-2 gap-x-3 text-sm">
+                  <div>
+                    <span className="text-muted">Balance </span>${fmtUsdc(p.balance, 2, p.reserve.decimals)}
+                  </div>
+                  <div>
+                    <span className="text-muted">Interest </span>
+                    {p.interest === undefined ? "-" : `$${fmtUsdc(p.interest, 4, p.reserve.decimals)}`}
+                  </div>
+                </div>
+                <div className="mt-0.5 text-xs text-muted">
+                  {p.basis === "allTime" ? "Basis: all time (Aave history)" : "Basis: since your last deposit or withdrawal"}
+                </div>
+              </li>
+            ))}
+          </ul>
+        </Card>
+      )}
+
+      {empty && (
+        <Notice>
+          You don&apos;t hold any Aave USDC yet.{" "}
+          <Link href="/stake" className="font-semibold underline">
+            Stake some USDC
+          </Link>{" "}
+          to start earning pizza money.
+        </Notice>
+      )}
 
       <Card title="My pie price">
         <p className="mb-3 text-sm text-muted">
@@ -109,8 +158,11 @@ export function DashboardPanel() {
         {badPrice && <p className="mt-2 text-sm text-tomato">Pick a price between $1 and $1,000.</p>}
       </Card>
 
-      {money.balance === 0n && (
-        <Notice>You don&apos;t hold any aUSDC yet. Stake some USDC to start earning pizza money.</Notice>
+      {positions.length > 0 && allTimeCount < positions.length && (
+        <p className="text-xs text-muted">
+          Interest for networks marked &quot;since your last deposit or withdrawal&quot; doesn&apos;t include earlier
+          interest.
+        </p>
       )}
     </div>
   );

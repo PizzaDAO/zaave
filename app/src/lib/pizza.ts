@@ -8,6 +8,11 @@ export const MIN_PIE_PRICE = 1n * USDC_UNIT;
 export const MAX_PIE_PRICE = 1000n * USDC_UNIT;
 const SECONDS_PER_YEAR = 31_536_000;
 
+/** Re-express a token amount in 6-decimal USDC units, so reserves with other decimals (BNB's 18) sum and display alike. */
+export function toUsdc6(amount: bigint, decimals: number): bigint {
+  return decimals >= USDC_DECIMALS ? amount / 10n ** BigInt(decimals - USDC_DECIMALS) : amount * 10n ** BigInt(USDC_DECIMALS - decimals);
+}
+
 /** Aave ray APR (1e27) to APY, compounded per second like Aave's own UI. */
 export function rayAprToApy(rate: bigint): number {
   const apr = Number(rate) / 1e27;

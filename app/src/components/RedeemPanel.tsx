@@ -1,80 +1,90 @@
 "use client";
 
-import { useState } from "react";
 import { useAccount } from "wagmi";
-import { formatUnits } from "viem";
 import { poolAbi } from "@/lib/abis";
-import { fmtUsdc, parseUsdc } from "@/lib/format";
-import { useAaveChain, usePizzaMoney, useTx } from "@/lib/hooks";
-import { USDC_DECIMALS } from "@/lib/pizza";
+import { fmtUsdc } from "@/lib/format";
+import { usePortfolio, useTx, type Position } from "@/lib/hooks";
+import { networkLabel, symbolLabel } from "@/lib/markets";
 import { Button, Card, Notice, TxStatus } from "./ui";
 
 export function RedeemPanel() {
-  const { chainId, cfg } = useAaveChain();
   const { address } = useAccount();
-  const money = usePizzaMoney();
-  const cashTx = useTx();
-  const [cashText, setCashText] = useState("");
+  const { positions, totals, unreachable, isLoading } = usePortfolio();
 
   if (!address) return null;
-  const available = money.interest ?? 0n;
-  const cashAmt = parseUsdc(cashText);
+  const cashable = positions.filter((p) => (p.interest ?? 0n) > 0n);
 
   return (
     <div className="space-y-4">
+      {unreachable.length > 0 && (
+        <Notice tone="warn">Couldn&apos;t reach {unreachable.join(", ")}, so pizza money there isn&apos;t listed.</Notice>
+      )}
+
       <Card>
         <div className="text-xs uppercase tracking-wide text-muted">Pizza money available</div>
-        <div className="text-3xl font-extrabold">${fmtUsdc(money.interest, 4)}</div>
-        <div className="text-xs text-muted">
-          {money.basis === "allTime" ? "Interest earned, all time" : "Interest earned since your last deposit or withdrawal"}
-        </div>
+        <div className="text-3xl font-extrabold">${fmtUsdc(totals.interest6, 4)}</div>
+        <div className="text-xs text-muted">Interest earned across all networks</div>
       </Card>
 
       <Card title="Cash out your pizza money">
         <p className="mb-3 text-sm text-muted">
           Withdraw just your interest as USDC to your wallet and buy your own pie. Your principal stays in Aave, still
-          earning.
+          earning. Each network is cashed out separately, and your wallet will ask to switch networks first.
         </p>
-        <div className="flex gap-2">
-          <input
-            inputMode="decimal"
-            placeholder="0.00"
-            aria-label="USDC interest to cash out"
-            value={cashText}
-            onChange={(e) => setCashText(e.target.value)}
-            className="min-w-0 flex-1 rounded-xl border border-border bg-background px-3 py-2 text-lg"
-          />
-          <Button variant="ghost" onClick={() => setCashText(formatUnits(available, USDC_DECIMALS))}>
-            Max
-          </Button>
-        </div>
-        <Button
-          className="mt-3 w-full"
-          disabled={!cashAmt || cashAmt > available || cashTx.busy}
-          onClick={() =>
-            cashAmt &&
-            cashTx.run((write) =>
-              write({
-                address: cfg.aavePool,
-                abi: poolAbi,
-                functionName: "withdraw",
-                args: [cfg.usdc, cashAmt, address],
-                chainId,
-              }),
-            )
-          }
-        >
-          Cash out
-        </Button>
-        {cashAmt !== undefined && cashAmt > available && (
-          <p className="mt-2 text-sm text-tomato">That&apos;s more than your pizza money.</p>
+        {isLoading && cashable.length === 0 && <p className="text-sm text-muted">Loading your positions…</p>}
+        {!isLoading && cashable.length === 0 && (
+          <Notice>No pizza money to cash out yet. It shows up here once your Aave USDC has earned interest.</Notice>
         )}
-        <TxStatus tx={cashTx} />
+        <ul className="divide-y divide-border">
+          {cashable.map((p) => (
+            <CashRow key={p.reserve.key} position={p} />
+          ))}
+        </ul>
       </Card>
 
       <Card title="DoorDash gift cards">
         <Notice>DoorDash gift cards: coming soon. Cash out USDC in the meantime.</Notice>
       </Card>
     </div>
+  );
+}
+
+function CashRow({ position: p }: { position: Position }) {
+  const { address } = useAccount();
+  const tx = useTx();
+  const interest = p.interest ?? 0n;
+  return (
+    <li className="py-3 first:pt-0 last:pb-0">
+      <div className="flex items-center justify-between gap-3">
+        <div className="min-w-0">
+          <div className="truncate font-semibold">
+            {networkLabel(p.reserve)} <span className="font-normal text-muted">· {symbolLabel(p.reserve)}</span>
+          </div>
+          <div className="text-lg font-extrabold">${fmtUsdc(interest, 4, p.reserve.decimals)}</div>
+          <div className="text-xs text-muted">
+            {p.basis === "allTime" ? "Interest earned, all time" : "Interest since your last deposit or withdrawal"}
+          </div>
+        </div>
+        <Button
+          className="shrink-0"
+          disabled={tx.busy || !p.state.canWithdraw || !address}
+          onClick={() =>
+            address &&
+            tx.run({ chainId: p.reserve.chainId, reserveKey: p.reserve.key }, (write) =>
+              write({
+                address: p.reserve.pool,
+                abi: poolAbi,
+                functionName: "withdraw",
+                args: [p.reserve.underlying, interest, address],
+                chainId: p.reserve.chainId,
+              }),
+            )
+          }
+        >
+          Cash out
+        </Button>
+      </div>
+      <TxStatus tx={tx} />
+    </li>
   );
 }

@@ -1,114 +1,179 @@
 "use client";
 
-import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { useCallback, useEffect, useState, useSyncExternalStore } from "react";
-import { erc20Abi, zeroAddress, type Hash } from "viem";
-import { useAccount, useChainId, useReadContracts, useWaitForTransactionReceipt, useWriteContract } from "wagmi";
-import { aTokenAbi } from "./abis";
-import { BASE, getChainConfig, getDefaultChainId, type SupportedChainId } from "./addresses";
-import { fetchAaveUsdcApy } from "./aave";
-import { fetchUsdcHistory, interestFromHistory, interestSinceLastAction, type InterestBasis } from "./interest";
-import { DEFAULT_PIE_PRICE, MAX_PIE_PRICE, MIN_PIE_PRICE, USDC_UNIT } from "./pizza";
+import { useQueries, useQueryClient } from "@tanstack/react-query";
+import { useCallback, useEffect, useMemo, useState, useSyncExternalStore } from "react";
+import { erc20Abi, type Hash } from "viem";
+import { useAccount, useReadContracts, useSwitchChain, useWaitForTransactionReceipt, useWriteContract } from "wagmi";
+import { fetchMarketHistory, interestFromHistory, interestSinceLastAction, type InterestBasis } from "./interest";
+import { buildMarketContracts, parseMarketRows, unreachableChains, type ReserveState } from "./market-reads";
+import { chainName, RESERVES, type Reserve } from "./markets";
+import { DEFAULT_PIE_PRICE, MAX_PIE_PRICE, MIN_PIE_PRICE, toUsdc6, USDC_UNIT } from "./pizza";
 
-/** Live Aave v3 USDC APY (fraction). Base mainnet by default; works with no wallet. */
-export function useAaveApy(chainId: SupportedChainId = BASE) {
-  return useQuery({
-    queryKey: ["aave-usdc-apy", chainId],
-    queryFn: () => fetchAaveUsdcApy(chainId),
-    staleTime: 60_000,
-    refetchInterval: 120_000,
-    retry: 2,
-  });
-}
+/** One refresh cadence for all on-chain reads, across every chain. */
+const POLL_MS = 30_000;
 
-/** The active chain's config (falls back to the default chain when the wallet is elsewhere). */
-export function useAaveChain() {
-  const walletChainId = useChainId();
-  const supported = getChainConfig(walletChainId) !== undefined;
-  const chainId = (supported ? walletChainId : getDefaultChainId()) as SupportedChainId;
-  return { chainId, cfg: getChainConfig(chainId)! };
-}
-
-const refetchInterval = 15_000;
-
-/** USDC wallet balance, allowance to the Aave Pool, and the aUSDC position, in one multicall. */
-export function useAaveData() {
-  const { chainId, cfg } = useAaveChain();
+/**
+ * Every USDC reserve on every chain, in one useReadContracts call: wagmi groups the calls by
+ * chainId into one multicall per chain, and allowFailure lets a dead RPC fail only its own rows.
+ * Rates need no wallet; the user's aToken position is added when connected.
+ */
+export function useMarketData() {
   const { address } = useAccount();
-  const user = address ?? zeroAddress;
-  const aToken = { address: cfg.aUsdc, abi: aTokenAbi, chainId } as const;
+  const contracts = useMemo(() => buildMarketContracts(address), [address]);
 
   const result = useReadContracts({
-    contracts: [
-      { address: cfg.usdc, abi: erc20Abi, functionName: "balanceOf", args: [user], chainId },
-      { address: cfg.usdc, abi: erc20Abi, functionName: "allowance", args: [user, cfg.aavePool], chainId },
-      { ...aToken, functionName: "balanceOf", args: [user] },
-      { ...aToken, functionName: "scaledBalanceOf", args: [user] },
-      { ...aToken, functionName: "getPreviousIndex", args: [user] },
-    ],
-    query: { enabled: !!address, refetchInterval },
+    contracts: contracts as never,
+    query: { refetchInterval: POLL_MS, staleTime: POLL_MS / 2 },
   });
-  const d = result.data;
-  return {
-    isLoading: result.isLoading,
-    usdcBalance: d?.[0].result as bigint | undefined,
-    allowance: d?.[1].result as bigint | undefined,
-    aUsdcBalance: d?.[2].result as bigint | undefined,
-    scaledBalance: d?.[3].result as bigint | undefined,
-    previousIndex: d?.[4].result as bigint | undefined,
-  };
+
+  const reserves = useMemo(() => parseMarketRows(result.data as never, address), [result.data, address]);
+
+  // A chain is "unreachable" when none of its reserves answered (only meaningful once loaded).
+  const unreachable = useMemo(
+    () => (result.isLoading || !result.data ? [] : unreachableChains(reserves, chainName)),
+    [reserves, result.isLoading, result.data],
+  );
+
+  /** Reserves currently accepting deposits, best APY first. */
+  const ranked = useMemo(
+    () => reserves.filter((s) => s.canSupply && s.apy !== undefined).sort((a, b) => b.apy! - a.apy!),
+    [reserves],
+  );
+
+  return { reserves, ranked, best: ranked[0], unreachable, isLoading: result.isLoading };
 }
 
-export type PizzaMoney = {
-  isLoading: boolean;
-  /** aUSDC balance (principal + interest). */
-  balance: bigint | undefined;
-  /** Interest earned, i.e. cashable pizza money. */
+export type Position = {
+  state: ReserveState;
+  reserve: Reserve;
+  /** aToken balance and interest in the reserve's own decimals (exact, for transactions). */
+  balance: bigint;
   interest: bigint | undefined;
-  /** "allTime" when Aave's history API answered, else "sinceLastAction". */
+  /** Same two figures normalized to 6-decimal USDC, for totals and pizza math. */
+  balance6: bigint;
+  interest6: bigint | undefined;
+  apy: number | undefined;
+  /** "allTime" when Aave's history API answered for this reserve, else "sinceLastAction". */
   basis: InterestBasis;
   /** All-time interest including anything already cashed out (all-time basis only). */
   lifetimeEarned: bigint | undefined;
 };
 
-/** Interest earned = aUSDC balance minus principal. Prefers Aave's lifetime history; falls back to on-chain. */
-// Unix seconds just before the user's latest in-app transaction. Aave's history API lags the
-// chain, so until it shows an event at or after this time, a fresh supply would read as interest.
-let lastTxAt = 0;
+// Unix seconds just before the user's latest in-app transaction, per reserve. Aave's history API
+// lags the chain, so until it shows an event at or after that time, a fresh supply would read as
+// interest.
+const lastTxAt = new Map<string, number>();
 const HISTORY_LAG_WINDOW = 600;
 
-export function usePizzaMoney(): PizzaMoney {
-  const { chainId, cfg } = useAaveChain();
+/**
+ * The user's positions across all chains, with interest per reserve. Prefers Aave's lifetime
+ * history (one API request per market, only for markets where the user holds a balance) and falls
+ * back to the exact on-chain since-last-action figure.
+ */
+export function usePortfolio() {
   const { address } = useAccount();
-  const d = useAaveData();
+  const market = useMarketData();
 
-  const history = useQuery({
-    queryKey: ["aave-usdc-history", chainId, address],
-    enabled: !!address && cfg.aaveApi,
-    queryFn: () => fetchUsdcHistory({ market: cfg.aavePool, user: address!, usdc: cfg.usdc, chainId }),
-    staleTime: 20_000,
-    refetchInterval: 60_000,
-    retry: 1,
+  const held = market.reserves.filter((s) => (s.balance ?? 0n) > 0n);
+  const historyMarkets = [...new Map(held.filter((s) => s.reserve.aaveApi).map((s) => [s.reserve.marketId, s.reserve])).values()];
+  const histories = useQueries({
+    queries: historyMarkets.map((r) => ({
+      queryKey: ["aave-history", r.marketId, address],
+      enabled: !!address,
+      queryFn: () =>
+        fetchMarketHistory({
+          market: r.pool,
+          user: address!,
+          chainId: r.chainId,
+          decimals: Object.fromEntries(
+            RESERVES.filter((x) => x.marketId === r.marketId).map((x) => [x.underlying.toLowerCase(), x.decimals]),
+          ),
+        }),
+      staleTime: 20_000,
+      refetchInterval: 60_000,
+      retry: 1,
+    })),
   });
+  const historyByMarket = new Map(historyMarkets.map((r, i) => [r.marketId, histories[i]]));
 
-  const balance = d.aUsdcBalance;
-  const newest = history.data?.reduce((m, e) => Math.max(m, e.timestamp), 0) ?? 0;
-  const historyStale = lastTxAt > 0 && newest < lastTxAt;
-  if (balance !== undefined && history.data && !historyStale) {
-    const h = interestFromHistory(balance, history.data);
-    return { isLoading: false, balance, interest: h.interest, basis: "allTime", lifetimeEarned: h.lifetimeEarned };
-  }
-  const fallback =
-    balance !== undefined && d.scaledBalance !== undefined && d.previousIndex !== undefined
-      ? interestSinceLastAction(balance, d.scaledBalance, d.previousIndex)
-      : undefined;
-  const waitingForHistory = !!address && cfg.aaveApi && history.isLoading && !historyStale;
+  const positions: Position[] = held.map((state) => {
+    const { reserve } = state;
+    const balance = state.balance!;
+    const h = historyByMarket.get(reserve.marketId);
+    const events = h?.data?.[reserve.underlying.toLowerCase()];
+    const newest = events?.reduce((m, e) => Math.max(m, e.timestamp), 0) ?? 0;
+    const txAt = lastTxAt.get(reserve.key) ?? 0;
+    const stale = txAt > 0 && newest < txAt;
+
+    let interest: bigint | undefined;
+    let basis: InterestBasis = "sinceLastAction";
+    let lifetimeEarned: bigint | undefined;
+    if (events && events.length > 0 && !stale) {
+      const x = interestFromHistory(balance, events);
+      interest = x.interest;
+      basis = "allTime";
+      lifetimeEarned = x.lifetimeEarned;
+    } else if (!(h?.isLoading && !stale)) {
+      interest =
+        state.scaledBalance !== undefined && state.previousIndex !== undefined
+          ? interestSinceLastAction(balance, state.scaledBalance, state.previousIndex)
+          : undefined;
+    }
+    return {
+      state,
+      reserve,
+      balance,
+      interest,
+      balance6: toUsdc6(balance, reserve.decimals),
+      interest6: interest === undefined ? undefined : toUsdc6(interest, reserve.decimals),
+      apy: state.apy,
+      basis,
+      lifetimeEarned,
+    };
+  });
+  positions.sort((a, b) => (a.balance6 < b.balance6 ? 1 : a.balance6 > b.balance6 ? -1 : 0));
+
+  const balance6 = positions.reduce((n, p) => n + p.balance6, 0n);
+  const interest6 = positions.reduce((n, p) => n + (p.interest6 ?? 0n), 0n);
+  const lifetime6 = positions.reduce(
+    (n, p) => n + (p.lifetimeEarned === undefined ? 0n : toUsdc6(p.lifetimeEarned, p.reserve.decimals)),
+    0n,
+  );
+  const interestPending = positions.some((p) => p.interest === undefined);
+
   return {
-    isLoading: d.isLoading || waitingForHistory,
-    balance,
-    interest: waitingForHistory ? undefined : fallback,
-    basis: "sinceLastAction",
-    lifetimeEarned: undefined,
+    positions,
+    totals: { balance6, interest6, lifetime6, interestPending },
+    unreachable: market.unreachable,
+    isLoading: market.isLoading || interestPending,
+    market,
+  };
+}
+
+/** The wallet's USDC balance and allowance to the Aave Pool for one reserve (on that reserve's chain). */
+export function useWalletReserve(reserve: Reserve | undefined) {
+  const { address } = useAccount();
+  const result = useReadContracts({
+    contracts:
+      reserve && address
+        ? [
+            { address: reserve.underlying, abi: erc20Abi, functionName: "balanceOf", args: [address], chainId: reserve.chainId },
+            {
+              address: reserve.underlying,
+              abi: erc20Abi,
+              functionName: "allowance",
+              args: [address, reserve.pool],
+              chainId: reserve.chainId,
+            },
+          ]
+        : [],
+    query: { enabled: !!reserve && !!address, refetchInterval: POLL_MS },
+  });
+  const d = result.data;
+  return {
+    isLoading: result.isLoading,
+    usdcBalance: d?.[0]?.result as bigint | undefined,
+    allowance: d?.[1]?.result as bigint | undefined,
   };
 }
 
@@ -153,14 +218,17 @@ export function usePiePrice() {
   return { piePrice, setPiePrice };
 }
 
-/** Wraps a wallet write: tracks the hash, waits for the receipt, refreshes all reads on success. */
+/** Wraps a wallet write: switches the wallet to the right chain first, tracks the hash, waits for the receipt, refreshes reads on success. */
 export function useTx() {
   const { writeContractAsync } = useWriteContract();
+  const { chainId: walletChainId } = useAccount();
+  const { switchChainAsync } = useSwitchChain();
   const qc = useQueryClient();
   const [hash, setHash] = useState<Hash>();
+  const [txChainId, setTxChainId] = useState<number>();
   const [error, setError] = useState<string>();
   const [signing, setSigning] = useState(false);
-  const receipt = useWaitForTransactionReceipt({ hash });
+  const receipt = useWaitForTransactionReceipt({ hash, chainId: txChainId });
 
   useEffect(() => {
     if (!receipt.isSuccess) return;
@@ -171,16 +239,18 @@ export function useTx() {
   }, [receipt.isSuccess, qc]);
 
   const run = useCallback(
-    async (send: (write: typeof writeContractAsync) => Promise<Hash>) => {
+    async (target: { chainId: number; reserveKey: string }, send: (write: typeof writeContractAsync) => Promise<Hash>) => {
       setError(undefined);
       setHash(undefined);
       setSigning(true);
-      const markedAt = Math.floor(Date.now() / 1000) - 60; // allow for clock skew vs block time
-      lastTxAt = markedAt;
-      setTimeout(() => {
-        if (lastTxAt === markedAt) lastTxAt = 0;
-      }, HISTORY_LAG_WINDOW * 1000);
       try {
+        if (walletChainId !== target.chainId) await switchChainAsync({ chainId: target.chainId });
+        const markedAt = Math.floor(Date.now() / 1000) - 60; // allow for clock skew vs block time
+        lastTxAt.set(target.reserveKey, markedAt);
+        setTimeout(() => {
+          if (lastTxAt.get(target.reserveKey) === markedAt) lastTxAt.delete(target.reserveKey);
+        }, HISTORY_LAG_WINDOW * 1000);
+        setTxChainId(target.chainId);
         setHash(await send(writeContractAsync));
       } catch (e) {
         const err = e as { shortMessage?: string; message?: string };
@@ -189,12 +259,13 @@ export function useTx() {
         setSigning(false);
       }
     },
-    [writeContractAsync],
+    [writeContractAsync, switchChainAsync, walletChainId],
   );
 
   return {
     run,
     hash,
+    chainId: txChainId,
     error: error ?? (receipt.isError ? "Transaction reverted" : undefined),
     busy: signing || (!!hash && receipt.isLoading),
     signing,

@@ -2,31 +2,18 @@
 
 import { ConnectButton } from "@rainbow-me/rainbowkit";
 import type { ReactNode } from "react";
-import { useAccount, useSwitchChain } from "wagmi";
-import { getChainConfig, getDefaultChainId } from "@/lib/addresses";
-import { useAaveChain } from "@/lib/hooks";
-import { Button, Card } from "./ui";
+import { useAccount } from "wagmi";
+import { Card } from "./ui";
 
-/** Renders children only when a wallet is connected on a supported chain. */
+/** Renders children only when a wallet is connected. Pages switch the wallet's network per action. */
 export function Gate({ children }: { children: ReactNode }) {
-  const { cfg } = useAaveChain();
-  const { isConnected, chainId } = useAccount();
-  const { switchChain } = useSwitchChain();
+  const { isConnected } = useAccount();
 
   if (!isConnected) {
     return (
       <Card title="Connect your wallet">
-        <p className="mb-4 text-sm text-muted">Connect a wallet on {cfg.name} to continue.</p>
+        <p className="mb-4 text-sm text-muted">Connect a wallet to continue. Zaave works on every Aave v3 network with USDC.</p>
         <ConnectButton />
-      </Card>
-    );
-  }
-  if (!getChainConfig(chainId)) {
-    const target = getDefaultChainId();
-    return (
-      <Card title="Wrong network">
-        <p className="mb-4 text-sm text-muted">Zaave runs on Base. Switch networks to continue.</p>
-        <Button onClick={() => switchChain({ chainId: target })}>Switch to {getChainConfig(target)?.name}</Button>
       </Card>
     );
   }

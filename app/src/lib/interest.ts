@@ -1,4 +1,5 @@
-// "Pizza money" = interest earned on the user's aUSDC. All amounts are 6-decimal USDC bigints.
+// "Pizza money" = interest earned on the user's aUSDC. Amounts are bigints in the reserve's own
+// token decimals (6 for almost every USDC, 18 for BNB Chain's).
 
 const RAY = 10n ** 27n;
 const HALF_RAY = RAY / 2n;
@@ -56,6 +57,12 @@ export function interestFromHistory(
   return { interest, lifetimeEarned: earned > 0n ? earned : 0n };
 }
 
+/** Re-express a raw token amount in another decimals base (no-op when equal or unknown). */
+function rescale(raw: bigint, from: number, to: number | undefined): bigint {
+  if (to === undefined || from === to) return raw;
+  return to > from ? raw * 10n ** BigInt(to - from) : raw / 10n ** BigInt(from - to);
+}
+
 const AAVE_API = "https://api.v3.aave.com/graphql";
 
 const HISTORY_QUERY = `query UserUsdcHistory($market: EvmAddress!, $user: EvmAddress!, $chainId: ChainId!, $cursor: Cursor) {
@@ -65,8 +72,8 @@ const HISTORY_QUERY = `query UserUsdcHistory($market: EvmAddress!, $user: EvmAdd
   }) {
     items {
       __typename
-      ... on UserSupplyTransaction { amount { amount { raw } } reserve { underlyingToken { address } } timestamp }
-      ... on UserWithdrawTransaction { amount { amount { raw } } reserve { underlyingToken { address } } timestamp }
+      ... on UserSupplyTransaction { amount { amount { raw decimals } } reserve { underlyingToken { address } } timestamp }
+      ... on UserWithdrawTransaction { amount { amount { raw decimals } } reserve { underlyingToken { address } } timestamp }
     }
     pageInfo { next }
   }
@@ -74,19 +81,24 @@ const HISTORY_QUERY = `query UserUsdcHistory($market: EvmAddress!, $user: EvmAdd
 
 type HistoryItem = {
   __typename: string;
-  amount?: { amount: { raw: string } };
+  amount?: { amount: { raw: string; decimals: number } };
   reserve?: { underlyingToken: { address: string } };
   timestamp?: string;
 };
 
-/** USDC supply/withdraw history from Aave's GraphQL API, oldest first. Throws on any failure. */
-export async function fetchUsdcHistory(args: {
+/**
+ * Supply/withdraw history of one Aave market from the GraphQL API, grouped by reserve underlying
+ * (lowercase address), each list oldest first. The API has no per-reserve filter, so one request
+ * serves every USDC reserve of the market. Throws on any failure.
+ */
+export async function fetchMarketHistory(args: {
   market: string;
   user: string;
-  usdc: string;
   chainId: number;
-}): Promise<UsdcEvent[]> {
-  const events: UsdcEvent[] = [];
+  /** Reserve decimals by lowercase underlying; API amounts are rescaled to these if they differ. */
+  decimals: Record<string, number>;
+}): Promise<Record<string, UsdcEvent[]>> {
+  const byAsset: Record<string, UsdcEvent[]> = {};
   let cursor: string | null = null;
   for (let page = 0; page < 20; page++) {
     const res = await fetch(AAVE_API, {
@@ -105,14 +117,18 @@ export async function fetchUsdcHistory(args: {
       pageInfo: { next: string | null };
     };
     for (const it of items) {
-      if (it.reserve?.underlyingToken.address.toLowerCase() !== args.usdc.toLowerCase() || !it.amount) continue;
-      events.push({
+      if (!it.reserve || !it.amount) continue;
+      const asset = it.reserve.underlyingToken.address.toLowerCase();
+      (byAsset[asset] ??= []).push({
         kind: it.__typename === "UserSupplyTransaction" ? "supply" : "withdraw",
-        amount: BigInt(it.amount.amount.raw),
+        amount: rescale(BigInt(it.amount.amount.raw), it.amount.amount.decimals, args.decimals[asset]),
         timestamp: Date.parse(it.timestamp ?? "") / 1000 || 0,
       });
     }
-    if (!pageInfo.next) return events.reverse();
+    if (!pageInfo.next) {
+      for (const list of Object.values(byAsset)) list.reverse(); // API returns newest first
+      return byAsset;
+    }
     cursor = pageInfo.next;
   }
   throw new Error("Aave history too long");

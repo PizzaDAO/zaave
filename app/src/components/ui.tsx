@@ -1,7 +1,7 @@
 "use client";
 
 import type { ComponentProps, ReactNode } from "react";
-import { useAaveChain } from "@/lib/hooks";
+import { explorerUrl } from "@/lib/markets";
 
 export function Card({ title, children, className = "" }: { title?: string; children: ReactNode; className?: string }) {
   return (
@@ -40,10 +40,9 @@ export function Notice({ tone = "info", children }: { tone?: "info" | "warn"; ch
   return <div className={`rounded-xl border p-3 text-sm ${color}`}>{children}</div>;
 }
 
-type TxState = { hash?: string; error?: string; busy: boolean; signing: boolean; confirmed: boolean };
+type TxState = { hash?: string; chainId?: number; error?: string; busy: boolean; signing: boolean; confirmed: boolean };
 
 export function TxStatus({ tx }: { tx: TxState }) {
-  const { cfg } = useAaveChain();
   if (tx.error) return <p className="mt-2 text-sm text-tomato">{tx.error}</p>;
   if (tx.signing) return <p className="mt-2 text-sm text-muted">Confirm in your wallet…</p>;
   if (tx.busy) return <p className="mt-2 text-sm text-muted">Confirming on-chain…</p>;
@@ -51,7 +50,7 @@ export function TxStatus({ tx }: { tx: TxState }) {
     return (
       <p className="mt-2 text-sm text-basil">
         Done!{" "}
-        <a className="underline" href={`${cfg.explorer}/tx/${tx.hash}`} target="_blank" rel="noreferrer">
+        <a className="underline" href={`${tx.chainId ? explorerUrl(tx.chainId) : ""}/tx/${tx.hash}`} target="_blank" rel="noreferrer">
           View transaction
         </a>
       </p>

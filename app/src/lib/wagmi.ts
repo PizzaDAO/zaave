@@ -1,18 +1,17 @@
 import { connectorsForWallets, getDefaultConfig } from "@rainbow-me/rainbowkit";
 import { injectedWallet } from "@rainbow-me/rainbowkit/wallets";
+import type { Chain, Transport } from "viem";
 import { createConfig, http } from "wagmi";
-import { base, baseSepolia } from "wagmi/chains";
-import { BASE, BASE_SEPOLIA, CHAINS, getDefaultChainId } from "./addresses";
+import { CHAINS, rpcUrl } from "./markets";
 
 const projectId = process.env.NEXT_PUBLIC_WC_PROJECT_ID;
 const appName = "Zaave";
 
-// Default chain goes first so it is used when no wallet is connected.
-const chains = getDefaultChainId() === BASE ? ([base, baseSepolia] as const) : ([baseSepolia, base] as const);
-const transports = {
-  [base.id]: http(CHAINS[BASE].rpcUrl),
-  [baseSepolia.id]: http(CHAINS[BASE_SEPOLIA].rpcUrl),
-};
+// Every chain with an Aave v3 USDC market. The first chain is used when no wallet is connected.
+const chains = CHAINS as unknown as readonly [Chain, ...Chain[]];
+const transports: Record<number, Transport> = Object.fromEntries(
+  chains.map((c) => [c.id, http(rpcUrl(c.id), { batch: true })]),
+);
 
 // With a WalletConnect project id: full RainbowKit wallet list. Without: injected wallets only.
 export const wagmiConfig = projectId

@@ -4,7 +4,7 @@ export const metadata = { title: "About | Zaave" };
 
 const steps = [
   ["Pick your pizza", "Choose pies per month and what a pie costs near you. The calculator shows the stake it takes."],
-  ["Stake USDC", "Your USDC is supplied to Aave v3's USDC pool on Base from your own wallet, and you receive aUSDC."],
+  ["Stake USDC", "Pick any network where Aave v3 has a USDC market, such as Ethereum, Base, Arbitrum, Optimism, Polygon or Avalanche. Your USDC is supplied to Aave's USDC pool there from your own wallet, and you receive aUSDC."],
   ["Earn slices", "Your aUSDC grows as interest accrues. Interest becomes slices (8 per pie) on your dashboard."],
   ["Eat", "Cash out just the interest as USDC and buy a pie. Your principal stays in Aave, still earning."],
 ];
@@ -15,8 +15,11 @@ export default function AboutPage() {
       <h1 className="text-3xl font-extrabold">How Zaave works</h1>
       <Card>
         <p className="text-sm">
-          Zaave is a pizza-themed interface to Aave v3&apos;s USDC pool on Base. That&apos;s all it is: it helps you
-          supply and withdraw on Aave, and shows your interest as pizza.
+          Zaave is a pizza-themed interface to Aave v3&apos;s USDC pools on every network that has one. That&apos;s all
+          it is: it helps you supply and withdraw on Aave, and shows your interest as pizza. The calculator uses the
+          best live rate across networks, and the dashboard adds up your positions on all of them. Some networks also
+          list bridged USDC (like USDC.e), which is a different token from Circle&apos;s native USDC and is labelled
+          as such.
         </p>
       </Card>
       <Card>

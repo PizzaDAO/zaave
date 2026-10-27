@@ -1,10 +1,10 @@
 import { formatUnits, parseUnits } from "viem";
 import { USDC_DECIMALS } from "./pizza";
 
-/** "1,234.56" from 6-decimal USDC. */
-export function fmtUsdc(value: bigint | undefined, maxFraction = 2): string {
+/** "1,234.56" from a token amount in the given decimals (default 6: normalized USDC). */
+export function fmtUsdc(value: bigint | undefined, maxFraction = 2, decimals = USDC_DECIMALS): string {
   if (value === undefined) return "-";
-  const n = Number(formatUnits(value, USDC_DECIMALS));
+  const n = Number(formatUnits(value, decimals));
   return n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: maxFraction });
 }
 
@@ -22,12 +22,12 @@ export function fmtPct(n: number): string {
   return `${(n * 100).toFixed(2)}%`;
 }
 
-/** Parse user text to 6-decimal USDC; undefined when empty/invalid. */
-export function parseUsdc(text: string): bigint | undefined {
+/** Parse user text to a token amount in the given decimals (default 6); undefined when empty/invalid. */
+export function parseUsdc(text: string, decimals = USDC_DECIMALS): bigint | undefined {
   const t = text.trim();
   if (!/^\d*\.?\d*$/.test(t) || t === "" || t === ".") return undefined;
   try {
-    return parseUnits(t, USDC_DECIMALS);
+    return parseUnits(t, decimals);
   } catch {
     return undefined;
   }

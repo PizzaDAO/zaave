@@ -3,7 +3,8 @@
 import Link from "next/link";
 import { useState } from "react";
 import { fmtNum, fmtPct, fmtUsd } from "@/lib/format";
-import { useAaveApy } from "@/lib/hooks";
+import { useMarketData } from "@/lib/hooks";
+import { networkLabel, symbolLabel } from "@/lib/markets";
 import { piesForStake, requiredStake } from "@/lib/pizza";
 import { Card } from "./ui";
 
@@ -13,9 +14,13 @@ const MIN_APY = 0.005;
 type Mode = "pies" | "stake";
 
 export function Calculator() {
-  const apyQuery = useAaveApy();
-  const live = apyQuery.data;
+  const market = useMarketData();
+  const [choice, setChoice] = useState<string>("best"); // "best" or a reserve key
+  const picked = market.ranked.find((s) => s.reserve.key === choice);
+  const used = picked ?? market.best;
+  const live = used?.apy;
   const apy = live ?? FALLBACK_APY;
+  const failed = !market.isLoading && market.ranked.length === 0;
 
   const [mode, setMode] = useState<Mode>("pies");
   const [piesText, setPiesText] = useState("2");
@@ -93,14 +98,47 @@ export function Calculator() {
       </div>
 
       <p className="mt-3 text-sm text-muted">
-        {apyQuery.isLoading && "Fetching live Aave APY…"}
-        {live !== undefined && (
+        {market.isLoading && "Fetching live Aave rates…"}
+        {used && live !== undefined && (
           <>
-            Live Aave v3 USDC APY on Base: <strong className="text-foreground">{fmtPct(live)}</strong>. Range uses {fmtPct(lo)} to {fmtPct(hi)}.
+            {picked ? "Using" : "Best live Aave v3 USDC rate:"} <strong className="text-foreground">{fmtPct(live)}</strong> on{" "}
+            <strong className="text-foreground">{networkLabel(used.reserve)}</strong> ({symbolLabel(used.reserve)}). Range uses{" "}
+            {fmtPct(lo)} to {fmtPct(hi)}.
           </>
         )}
-        {apyQuery.isError && `Couldn't reach Aave, so this uses an estimated ${fmtPct(FALLBACK_APY)} APY.`}
+        {failed && `Couldn't reach Aave, so this uses an estimated ${fmtPct(FALLBACK_APY)} APY.`}
       </p>
+
+      {market.ranked.length > 0 && (
+        <details className="group mt-2 rounded-xl border border-border">
+          <summary className="flex min-h-11 cursor-pointer list-none items-center justify-between px-3 text-sm font-semibold">
+            Rates by network
+            <span className="text-muted transition group-open:rotate-180" aria-hidden>
+              ▾
+            </span>
+          </summary>
+          <ul className="divide-y divide-border border-t border-border text-sm">
+            <li>
+              <RateRow label="Best rate (automatic)" apy={market.best?.apy} active={choice === "best"} onPick={() => setChoice("best")} />
+            </li>
+            {market.ranked.map((s) => (
+              <li key={s.reserve.key}>
+                <RateRow
+                  label={`${networkLabel(s.reserve)} · ${symbolLabel(s.reserve)}`}
+                  apy={s.apy}
+                  active={choice === s.reserve.key}
+                  onPick={() => setChoice(s.reserve.key)}
+                />
+              </li>
+            ))}
+          </ul>
+          {market.unreachable.length > 0 && (
+            <p className="border-t border-border px-3 py-2 text-xs text-muted">
+              Couldn&apos;t reach {market.unreachable.join(", ")}.
+            </p>
+          )}
+        </details>
+      )}
 
       <Link
         href="/stake"
@@ -109,5 +147,19 @@ export function Calculator() {
         Start staking
       </Link>
     </Card>
+  );
+}
+
+function RateRow({ label, apy, active, onPick }: { label: string; apy: number | undefined; active: boolean; onPick: () => void }) {
+  return (
+    <button
+      type="button"
+      onClick={onPick}
+      aria-pressed={active}
+      className={`flex min-h-11 w-full items-center justify-between gap-2 px-3 text-left ${active ? "bg-tomato/10 font-semibold" : ""}`}
+    >
+      <span className="min-w-0 truncate">{label}</span>
+      <span className="shrink-0 tabular-nums">{apy === undefined ? "-" : fmtPct(apy)}</span>
+    </button>
   );
 }
