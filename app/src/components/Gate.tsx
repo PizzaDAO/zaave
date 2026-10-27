@@ -4,26 +4,15 @@ import { ConnectButton } from "@rainbow-me/rainbowkit";
 import type { ReactNode } from "react";
 import { useAccount, useSwitchChain } from "wagmi";
 import { getChainConfig, getDefaultChainId } from "@/lib/addresses";
-import { useZaaveChain } from "@/lib/hooks";
-import { Button, Card, Notice } from "./ui";
+import { useAaveChain } from "@/lib/hooks";
+import { Button, Card } from "./ui";
 
-/** Renders children only when a wallet is connected on a chain with a live Zaave contract. */
+/** Renders children only when a wallet is connected on a supported chain. */
 export function Gate({ children }: { children: ReactNode }) {
-  const { cfg, status } = useZaaveChain();
+  const { cfg } = useAaveChain();
   const { isConnected, chainId } = useAccount();
   const { switchChain } = useSwitchChain();
 
-  if (status === "unconfigured" || status === "notDeployed") {
-    return (
-      <Card title="Not deployed here yet">
-        <Notice tone="warn">
-          Zaave isn&apos;t deployed on {cfg.name} yet
-          {status === "unconfigured" ? " (no contract address configured)" : " (nothing at the configured address)"}. The
-          pizza calculator on the home page still works with live Aave rates.
-        </Notice>
-      </Card>
-    );
-  }
   if (!isConnected) {
     return (
       <Card title="Connect your wallet">
@@ -41,6 +30,5 @@ export function Gate({ children }: { children: ReactNode }) {
       </Card>
     );
   }
-  if (status === "checking") return <Card>Checking contract…</Card>;
   return <>{children}</>;
 }

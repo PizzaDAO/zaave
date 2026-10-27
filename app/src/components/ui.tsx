@@ -1,7 +1,7 @@
 "use client";
 
 import type { ComponentProps, ReactNode } from "react";
-import { useZaaveChain } from "@/lib/hooks";
+import { useAaveChain } from "@/lib/hooks";
 
 export function Card({ title, children, className = "" }: { title?: string; children: ReactNode; className?: string }) {
   return (
@@ -43,7 +43,7 @@ export function Notice({ tone = "info", children }: { tone?: "info" | "warn"; ch
 type TxState = { hash?: string; error?: string; busy: boolean; signing: boolean; confirmed: boolean };
 
 export function TxStatus({ tx }: { tx: TxState }) {
-  const { cfg } = useZaaveChain();
+  const { cfg } = useAaveChain();
   if (tx.error) return <p className="mt-2 text-sm text-tomato">{tx.error}</p>;
   if (tx.signing) return <p className="mt-2 text-sm text-muted">Confirm in your wallet…</p>;
   if (tx.busy) return <p className="mt-2 text-sm text-muted">Confirming on-chain…</p>;
