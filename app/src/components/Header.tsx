@@ -22,14 +22,14 @@ export function Header() {
         </Link>
         <ConnectButton showBalance={false} chainStatus="icon" accountStatus="avatar" />
       </div>
-      <nav className="mx-auto flex max-w-4xl gap-1 overflow-x-auto px-3 pb-2 text-sm">
+      <nav className="mx-auto flex max-w-4xl overflow-x-auto px-2 pb-2 text-sm sm:gap-1 sm:px-3">
         {links.map((l) => {
           const active = pathname === l.href;
           return (
             <Link
               key={l.href}
               href={l.href}
-              className={`whitespace-nowrap rounded-full px-3 py-1.5 font-medium ${
+              className={`whitespace-nowrap rounded-full px-2 py-2 font-medium sm:px-3 sm:py-1.5 ${
                 active ? "bg-tomato text-white" : "text-muted hover:text-foreground"
               }`}
             >
