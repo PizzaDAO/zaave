@@ -13,12 +13,14 @@ import {
   mantle,
   megaeth,
   metis,
+  monad,
   optimism,
   plasma,
   polygon,
   scroll,
   soneium,
   sonic,
+  xLayer,
   zksync,
 } from "wagmi/chains";
 import { MAINNET_MARKETS, RPC_OVERRIDES, TESTNET_MARKETS, type Market, type RawReserve } from "./markets.generated";
@@ -32,7 +34,7 @@ export const MARKETS: readonly Market[] = TESTNETS_ENABLED ? [...MAINNET_MARKETS
 
 // Every chainId in MARKETS needs an entry here (checked at module load below).
 const VIEM_CHAINS: Record<number, Chain> = Object.fromEntries(
-  [mainnet, optimism, bsc, gnosis, polygon, sonic, zksync, metis, soneium, mantle, base, arbitrum, celo, avalanche, ink, linea, scroll, plasma, megaeth, baseSepolia].map(
+  [mainnet, optimism, bsc, gnosis, polygon, sonic, zksync, metis, soneium, mantle, base, arbitrum, celo, avalanche, ink, linea, scroll, plasma, megaeth, xLayer, monad, baseSepolia].map(
     (c) => [c.id, c as Chain],
   ),
 );
