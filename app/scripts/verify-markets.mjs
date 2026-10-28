@@ -95,6 +95,25 @@ for (const m of MAINNET_MARKETS) {
     problems.push(`UiPoolDataProvider: ${String(e.shortMessage ?? e.message).slice(0, 100)}`);
   }
 
+  // Pool <-> addresses provider <-> oracle wiring.
+  try {
+    const wiring = parseAbi([
+      "function ADDRESSES_PROVIDER() view returns (address)",
+      "function getPool() view returns (address)",
+      "function getPriceOracle() view returns (address)",
+    ]);
+    const [prov, pool, oracle] = [
+      await read(m.pool, wiring, "ADDRESSES_PROVIDER"),
+      await read(m.poolAddressesProvider, wiring, "getPool"),
+      await read(m.poolAddressesProvider, wiring, "getPriceOracle"),
+    ];
+    if (!eq(prov, m.poolAddressesProvider)) problems.push(`pool.ADDRESSES_PROVIDER ${prov} != config`);
+    if (!eq(pool, m.pool)) problems.push(`provider.getPool ${pool} != config`);
+    if (!eq(oracle, m.oracle)) problems.push(`provider.getPriceOracle ${oracle} != config oracle`);
+  } catch (e) {
+    problems.push(`addresses provider wiring: ${String(e.shortMessage ?? e.message).slice(0, 100)}`);
+  }
+
   // Gateway.
   let gw = "no gateway";
   if (m.gateway) {
