@@ -50,7 +50,6 @@ vercel-deploy --prod                   # from app/ (linked to pizza-dao/zaave)
 ```
 - `app/pnpm-workspace.yaml` `allowBuilds` must keep sharp, unrs-resolver, bufferutil, keccak and utf-8-validate set to `false`. Without that, pnpm 12 fails the Vercel install with `ERR_PNPM_IGNORED_BUILDS`.
 - `next.config.ts` aliases RainbowKit's optional `@x402/*` imports to `src/lib/empty-module.ts`. Keep this when upgrading wagmi or RainbowKit.
-- Vercel env: `NEXT_PUBLIC_DEFAULT_CHAIN` is no longer used and can be removed.
 
 ## History
 - The first design used a custom vault contract (principal/yield split, monthly "Za Day" harvest, pizza credit, gift card redemption). It was built and reviewed, then dropped for a pure front end because it needed no new contract risk or testnet deploy. It's preserved at the git tag **`custom-vault-contract`**.
