@@ -12,7 +12,7 @@
 // and adds reserves the book lacks. The Pool (from the book) is the only trust root: each added
 // reserve must satisfy pool.getReserveData(asset).aTokenAddress == aToken, aToken.POOL() == pool,
 // aToken.UNDERLYING_ASSET_ADDRESS() == asset, and be active with the same aToken implementation
-// (EIP-1967 slot) as an openly suppliable reserve of that market. Anything else is skipped and
+// (EIP-1967 slot) as a book reserve kept for that market. Anything else is skipped and
 // logged. An RPC failure aborts the run (after retries); reserves are never silently dropped.
 // RPC_<chainId>=url overrides the endpoint (Mantle's default rate-limits; the fallback used here
 // is https://mantle-rpc.publicnode.com).
@@ -31,6 +31,8 @@ const pkg = JSON.parse(readFileSync(new URL("../node_modules/@bgd-labs/aave-addr
 // names (USDCn is Circle's native USDC on chains that also list a bridged one). Anything else
 // uses the key itself with "_" shown as "-" (PT_USDe_5FEB2026 -> PT-USDe-5FEB2026).
 const SYMBOLS = {
+  // On-chain symbols of Pool-discovered reserves, matched to the book's spelling.
+  "BTC.b": "BTCb",
   USDCe: "USDC.e",
   mUSDC: "m.USDC",
   ONE_INCH: "1INCH",
@@ -163,7 +165,7 @@ async function onchainReserves({ exportName, m, bookUnderlyings, openImplFrom, u
   if (ONLY_KEYS[exportName]) {
     return { rows, skipped: extra.map((a) => `${a} (market is restricted to ${ONLY_KEYS[exportName].join("/")}; permissioned RWA)`) };
   }
-  // aToken implementations in use by this market's openly suppliable (kept) book reserves.
+  // aToken implementations in use by this market's kept book reserves (any status).
   const openImpls = new Set();
   for (const [, , aToken] of openImplFrom) {
     openImpls.add(await retry(`${L} impl ${aToken}`, () => c.getStorageAt({ address: aToken, slot: IMPL_SLOT })));
